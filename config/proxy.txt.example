@@ -1,0 +1,5 @@
+# Akemi proxy configuration example
+# Akemi reads one proxy per line from config/proxy.txt.
+# It traverses the chain in this exact order.
+http://user:pass@127.0.0.1:8080
+socks5://user:pass@127.0.0.1:9050

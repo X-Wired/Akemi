@@ -1,0 +1,24 @@
+id: prototype-pollution
+info:
+  name: "Potential Prototype Pollution Reflection"
+  severity: low
+  description: "Detects reflected prototype-pollution canaries; manual verification is still required"
+  tags: [prototype-pollution, javascript, nodejs, injection]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "__proto__[akemiTest]=akemiPolluted"
+  - "__proto__.akemiTest=akemiPolluted"
+  - "constructor[prototype][akemiTest]=akemiPolluted"
+  - "constructor.prototype.akemiTest=akemiPolluted"
+  - '__proto__[status]=510'
+  - '__proto__[constructor][name]=akemiPP'
+
+matchers:
+  body_patterns:
+    - "akemiPolluted"
+    - "akemiPP"
+  status_codes: []

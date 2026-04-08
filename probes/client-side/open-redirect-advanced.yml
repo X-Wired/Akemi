@@ -1,0 +1,30 @@
+id: open-redirect-advanced
+info:
+  name: "Open Redirect - Advanced Bypass"
+  severity: medium
+  description: "Advanced open redirect bypasses using encoding, protocol tricks, and Unicode"
+  tags: [redirect, bypass, client-side]
+  author: Wired
+
+inject: query_params
+detection: header_check
+
+payloads:
+  - "//evil.com/%2f%2e%2e"
+  - "/%5cevil.com"
+  - "//evil%E3%80%82com"
+  - "https://evil.com#@legit.com"
+  - "/\\evil.com"
+  - "https:evil.com"
+  - "//evil.com@legit.com"
+  - "////evil.com"
+  - "https://evil.com%00.legit.com"
+  - "//evil.com\\@legit.com"
+  - "https://evil.com%23@legit.com"
+  - "https://legit.com.evil.com"
+
+matchers:
+  headers:
+    Location: "evil.com"
+  body_patterns:
+    - "(?i)evil\\.com"

@@ -1,0 +1,24 @@
+id: cors-advanced
+info:
+  name: "CORS Advanced Misconfiguration"
+  severity: medium
+  description: "Detects advanced CORS misconfigurations including null origin and wildcard with credentials"
+  tags: [cors, misconfiguration, client-side, advanced]
+  author: Wired
+
+inject: headers
+detection: header_check
+header_names:
+  - Origin
+
+payloads:
+  - "null"
+  - "https://evil.com"
+  - "https://target.com.evil.com"
+  - "https://evil-target.com"
+
+matchers:
+  headers:
+    Access-Control-Allow-Origin: "null"
+    Access-Control-Allow-Credentials: "true"
+  body_patterns: []

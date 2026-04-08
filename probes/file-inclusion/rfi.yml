@@ -1,0 +1,22 @@
+id: rfi
+info:
+  name: "Remote File Inclusion"
+  severity: high
+  description: "Detects RFI by injecting external URLs and confirming via OOB callback"
+  tags: [rfi, file-inclusion, injection]
+  author: Wired
+
+inject: query_params
+detection: oob
+
+payloads: []
+
+oob_payloads:
+  - "{{OOB_URL}}"
+  - "http://{{OOB_DOMAIN}}/shell.txt"
+  - "{{OOB_URL}}%00"
+  - "{{OOB_URL}}?"
+  - "{{OOB_URL}}#"
+
+matchers:
+  body_patterns: []

@@ -1,0 +1,22 @@
+id: deserialization
+info:
+  name: "Potential Deserialization Sink"
+  severity: low
+  description: "Passive scan for deserialization stack traces and sink markers in responses"
+  tags: [deserialization, passive, rce]
+  author: Wired
+
+inject: none
+detection: pattern
+
+payloads: []
+
+matchers:
+  body_patterns:
+    # Generic error messages indicating deserialization
+    - "(?i)unserialize\\(\\)"
+    - "(?i)java\\.io\\.ObjectInputStream"
+    - "(?i)ClassNotFoundException"
+    - "(?i)InvalidClassException"
+    - "(?i)pickle\\.loads"
+    - "(?i)yaml\\.load\\("

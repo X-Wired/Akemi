@@ -1,0 +1,29 @@
+id: xss-dom
+info:
+  name: "Potential DOM XSS Sink"
+  severity: low
+  description: "Identifies dangerous DOM sinks; manual source-to-sink review is still required"
+  tags: [xss, dom, client-side, passive]
+  author: Wired
+
+inject: none
+detection: pattern
+
+payloads: []
+
+matchers:
+  body_patterns:
+    - "document\\.write\\("
+    - "document\\.writeln\\("
+    - "\\.innerHTML\\s*="
+    - "\\.outerHTML\\s*="
+    - "eval\\("
+    - "setTimeout\\([^,]*\\+|setTimeout\\(.*concat"
+    - "setInterval\\([^,]*\\+|setInterval\\(.*concat"
+    - "location\\.href\\s*="
+    - "location\\.assign\\("
+    - "location\\.replace\\("
+    - "window\\.open\\("
+    - "\\.insertAdjacentHTML\\("
+    - "\\$\\(.*\\)\\.html\\("
+    - "\\$\\(.*\\)\\.append\\("

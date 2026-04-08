@@ -1,0 +1,23 @@
+id: cors
+info:
+  name: "CORS Misconfiguration"
+  severity: low
+  description: "Detects permissive CORS by sending crafted Origin headers and checking ACAO response"
+  tags: [cors, misconfiguration, client-side]
+  author: Wired
+
+inject: headers
+detection: header_check
+header_names:
+  - Origin
+
+payloads:
+  - "https://evil.com"
+  - "null"
+  - "https://evil.target.com"
+  - "https://target.com.evil.com"
+
+matchers:
+  headers:
+    Access-Control-Allow-Origin: "evil.com"
+  body_patterns: []

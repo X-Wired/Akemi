@@ -1,0 +1,29 @@
+id: graphql-injection
+info:
+  name: "GraphQL Introspection Exposed"
+  severity: low
+  description: "Detects GraphQL introspection exposure; treat as attack-surface information rather than direct exploitability"
+  tags: [graphql, injection, api, introspection]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - '{"query":"{ __schema { types { name } } }"}'
+  - '{"query":"{ __type(name:\"Query\") { fields { name } } }"}'
+  - '{"query":"{__typename}"}'
+  - "query={__schema{types{name}}}"
+  - "query={__typename}"
+  - '{"query":"{ __schema { queryType { name } mutationType { name } } }"}'
+  - 'query=mutation{__typename}'
+  - '{"query":"{ __schema { directives { name } } }"}'
+
+matchers:
+  body_patterns:
+    - '"__schema"'
+    - '"__type"'
+    - '"__typename"'
+    - '"queryType"'
+    - '"mutationType"'
+    - '"fields"'

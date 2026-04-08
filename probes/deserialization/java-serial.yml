@@ -1,0 +1,25 @@
+id: java-serial
+info:
+  name: "Java Deserialization"
+  severity: high
+  description: "Detects Java deserialization sinks via stack traces, gadget references, or execution markers"
+  tags: [deserialization, java, rce, gadget]
+  author: Wired
+
+inject: body
+detection: pattern
+
+payloads:
+  # aced0005 = Java serialization magic bytes (base64: rO0ABX)
+  - "rO0ABXNyABdqYXZhLnV0aWwuUHJpb3JpdHlRdWV1ZZTaMLT7P4KxAwACSQAEc2l6ZUwACmNvbXBhcmF0b3J0ABZMamF2YS91dGlsL0NvbXBhcmF0b3I7eHAAAAACc3IAK29yZy5hcGFjaGUuY29tbW9ucy5iZWFudXRpbHMuQmVhbkNvbXBhcmF0b3I="
+
+matchers:
+  body_patterns:
+    - "(?i)java\\.io\\.ObjectInputStream"
+    - "(?i)ClassNotFoundException"
+    - "(?i)InvalidClassException"
+    - "(?i)java\\.io\\.StreamCorruptedException"
+    - "(?i)not.*serializable"
+    - "(?i)deserialization"
+    - "(?i)readObject"
+    - "(?i)commons.collections"

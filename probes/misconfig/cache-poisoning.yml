@@ -1,0 +1,25 @@
+id: cache-poisoning
+info:
+  name: "Potential Unkeyed Header Reflection"
+  severity: low
+  description: "Detects reflection of unkeyed routing headers that can become cache-poisoning primitives"
+  tags: [misconfig, cache, poisoning, advanced]
+  author: Wired
+
+inject: headers
+detection: pattern
+header_names:
+  - X-Forwarded-Host
+  - X-Host
+  - X-Original-URL
+  - X-Rewrite-URL
+
+payloads:
+  - "akemi-cache-poison.evil.com"
+  - "akemi-cache-inject"
+
+matchers:
+  body_patterns:
+    - "akemi-cache-poison\\.evil\\.com"
+    - "akemi-cache-inject"
+  headers: {}

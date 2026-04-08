@@ -1,0 +1,20 @@
+id: ruby-marshal
+info:
+  name: "Potential Ruby Deserialization Sink"
+  severity: medium
+  description: "Detects Ruby Marshal and YAML deserialization sink markers"
+  tags: [deserialization, ruby, rce, gadget, marshal]
+  author: Wired
+
+inject: none
+detection: pattern
+
+payloads: []
+
+matchers:
+  body_patterns:
+    - "(?i)Marshal\\.load"
+    - "(?i)YAML\\.load\\("
+    - "(?i)Psych::DisallowedClass"
+    - "(?i)TypeError.*dump format"
+    - "(?i)ArgumentError.*marshal data too short"

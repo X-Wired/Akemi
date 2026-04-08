@@ -1,0 +1,16 @@
+id: csrf-detection
+info:
+  name: "Potential Missing CSRF Token"
+  severity: low
+  description: "Heuristic check for POST forms that appear to omit anti-CSRF tokens"
+  tags: [csrf, client-side, passive]
+  author: Wired
+
+inject: none
+detection: pattern
+
+payloads: []
+
+matchers:
+  body_patterns:
+    - "(?i)<form[^>]*method=[\"']?post[\"']?[^>]*>(?:(?!csrf|_token|authenticity_token|__RequestVerificationToken|csrfmiddlewaretoken).)*</form>"

@@ -1,0 +1,23 @@
+# Custom exploitation template — CVE-specific
+# Use this for targeting specific CVEs with known payloads.
+
+id: custom-cve
+info:
+  name: "Custom CVE Exploit"
+  severity: critical
+  description: "Custom CVE-specific probe — edit for your target vulnerability"
+  tags: [custom, cve]
+  author: YourName
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "YOUR_CVE_PAYLOAD"
+
+matchers:
+  body_patterns:
+    - "YOUR_CVE_INDICATOR"
+
+# oob_payloads:
+#   - "{{OOB_URL}}"

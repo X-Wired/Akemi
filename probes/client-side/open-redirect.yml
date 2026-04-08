@@ -1,0 +1,31 @@
+id: open-redirect
+info:
+  name: "Open Redirect"
+  severity: medium
+  description: "Detects open redirect by checking if injected URLs appear in Location header"
+  tags: [redirect, misconfiguration]
+  author: Wired
+
+inject: query_params
+detection: header_check
+
+payloads:
+  - "https://evil.com"
+  - "//evil.com"
+  - "//evil.com/%2f.."
+  - "https://evil.com?legit.com"
+  - "/%09/evil.com"
+  - "/\\evil.com"
+  - "https:evil.com"
+  - "javascript:alert(1)"
+  - "//evil%E3%80%82com"
+  - "https://evil.com/..;/"
+  - "///evil.com"
+  - "////evil.com"
+  - "https://evil.com#@legit.com"
+
+matchers:
+  headers:
+    Location: "evil.com"
+  body_patterns:
+    - "(?i)evil\\.com"

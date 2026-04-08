@@ -1,0 +1,22 @@
+id: security-headers
+info:
+  name: "Missing Security Headers"
+  severity: low
+  description: "Passive check for missing security headers (CSP, HSTS, X-Frame-Options, etc.)"
+  tags: [headers, misconfiguration, passive, compliance]
+  author: Wired
+
+inject: none
+detection: header_check
+
+payloads: []
+
+matchers:
+  headers:
+    X-Frame-Options: "MISSING"
+    Content-Security-Policy: "MISSING"
+    Strict-Transport-Security: "MISSING"
+    X-Content-Type-Options: "MISSING"
+    Referrer-Policy: "MISSING"
+    Permissions-Policy: "MISSING"
+  body_patterns: []

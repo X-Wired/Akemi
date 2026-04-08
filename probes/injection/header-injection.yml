@@ -1,0 +1,30 @@
+id: header-injection
+info:
+  name: "HTTP Header Injection"
+  severity: medium
+  description: "Detects injection via X-Forwarded-For, Referer, and other common headers"
+  tags: [header, injection, sqli, xss]
+  author: Wired
+
+inject: headers
+detection: pattern
+header_names:
+  - X-Forwarded-For
+  - Referer
+  - User-Agent
+
+payloads:
+  - "' OR '1'='1"
+  - "<script>alert(1)</script>"
+  - "akemi{{1337*1337}}test"
+  - "../../etc/passwd"
+  - "; ls"
+
+matchers:
+  body_patterns:
+    - "(?i)you have an error in your sql syntax"
+    - "(?i)warning.*mysql"
+    - "<script>alert\\(1\\)</script>"
+    - "akemi1787569test"
+    - "root:.*:0:0:"
+    - "(?i)ORA-[0-9]{4,}"

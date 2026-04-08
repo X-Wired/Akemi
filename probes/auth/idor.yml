@@ -1,0 +1,31 @@
+id: idor
+info:
+  name: "Insecure Direct Object Reference"
+  severity: high
+  description: "Detects IDOR by probing sequential and predictable resource identifiers"
+  tags: [auth, idor, access-control]
+  author: Wired
+
+inject: query_params
+detection: status_diff
+
+payloads:
+  - "1"
+  - "2"
+  - "0"
+  - "-1"
+  - "999999"
+  - "admin"
+  - "root"
+  - "../1"
+
+matchers:
+  status_codes:
+    - 200
+  body_patterns:
+    - "(?i)email"
+    - "(?i)username"
+    - "(?i)password"
+    - "(?i)address"
+    - "(?i)phone"
+    - "(?i)ssn"

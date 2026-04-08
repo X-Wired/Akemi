@@ -1,0 +1,24 @@
+id: directory-listing
+info:
+  name: "Directory Listing / Exposed Files"
+  severity: medium
+  description: "Detects exposed directory listings, admin panels, and sensitive files"
+  tags: [misconfig, directory-listing, info-disclosure, passive]
+  author: Wired
+
+inject: none
+detection: pattern
+
+payloads: []
+
+matchers:
+  body_patterns:
+    - "(?i)Index of /"
+    - "(?i)Directory listing for"
+    - "(?i)<title>Directory Listing"
+    - "(?i)Parent Directory"
+    - "(?i)phpinfo\\(\\)"
+    - "(?i)\\.git/config"
+    - "(?i)\\.env"
+    - "(?i)wp-config\\.php"
+    - "(?i)web\\.config"

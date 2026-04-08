@@ -1,0 +1,27 @@
+id: php-unserialize
+info:
+  name: "PHP Deserialization"
+  severity: high
+  description: "Detects PHP unserialize() vulnerabilities via serialized object injection"
+  tags: [deserialization, php, rce, gadget]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - 'O:8:"stdClass":0:{}'
+  - 'a:1:{s:4:"test";s:13:"akemi_deser";}'
+  - 'O:7:"Archive":1:{s:3:"cmd";s:2:"id";}'
+  - 's:13:"akemi_deser";'
+  - 'O:3:"Foo":1:{s:3:"bar";s:6:"system";}'
+
+matchers:
+  body_patterns:
+    - "(?i)unserialize\\(\\)"
+    - "(?i)__wakeup"
+    - "(?i)__destruct"
+    - "akemi_deser"
+    - "(?i)cannot be deserialized"
+    - "(?i)POP chain"
+    - "(?i)Serialization of.*is not allowed"

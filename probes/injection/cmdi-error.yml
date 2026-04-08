@@ -1,0 +1,34 @@
+id: cmdi-error
+info:
+  name: "Command Injection - Error Based"
+  severity: high
+  description: "Detects command injection through OS error messages in response"
+  tags: [cmdi, injection, rce, error]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "| invalid_command_akemi 2>&1"
+  - "; invalid_command_akemi 2>&1"
+  - "$(invalid_command_akemi)"
+  - "`invalid_command_akemi`"
+  - "& invalid_command_akemi"
+  - "| type C:\\nonexistent_akemi"
+  - "; cat /nonexistent_akemi_file"
+  - "| echo akemi_rce_confirmed"
+  - "; echo akemi_rce_confirmed"
+  - "$(echo akemi_rce_confirmed)"
+  - "`echo akemi_rce_confirmed`"
+
+matchers:
+  body_patterns:
+    - "invalid_command_akemi.*not found"
+    - "(?i)invalid_command_akemi.*not recognized"
+    - "(?i)No such file.*nonexistent_akemi"
+    - "akemi_rce_confirmed"
+    - "(?i)command not found"
+    - "(?i)is not recognized as an internal or external"
+    - "(?i)/bin/sh:"
+    - "(?i)syntax error"

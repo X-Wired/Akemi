@@ -1,0 +1,21 @@
+id: dotnet-binaryformatter
+info:
+  name: "Potential .NET Deserialization Sink"
+  severity: medium
+  description: "Detects .NET deserialization stack traces and dangerous serializer configuration"
+  tags: [deserialization, dotnet, rce, gadget, viewstate]
+  author: Wired
+
+inject: none
+detection: pattern
+
+payloads: []
+
+matchers:
+  body_patterns:
+    - "(?i)BinaryFormatter"
+    - "(?i)TypeNameHandling"
+    - "(?i)System\\.Runtime\\.Serialization"
+    - "(?i)ObjectDataProvider"
+    - "(?i)SoapFormatter"
+    - "(?i)LosFormatter"

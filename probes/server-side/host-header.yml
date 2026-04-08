@@ -1,0 +1,26 @@
+id: host-header
+info:
+  name: "Host Header Injection"
+  severity: medium
+  description: "Detects host header injection by manipulating the Host header and checking reflection"
+  tags: [host-header, injection, misconfiguration]
+  author: Wired
+
+inject: headers
+detection: header_check
+header_names:
+  - Host
+
+payloads:
+  - "evil.com"
+  - "evil.com:443"
+  - "localhost"
+  - "127.0.0.1"
+
+matchers:
+  headers:
+    Location: "evil.com"
+  body_patterns:
+    - "evil\\.com"
+    - "(?i)password reset"
+    - "(?i)verify.*evil\\.com"

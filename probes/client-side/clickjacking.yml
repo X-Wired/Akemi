@@ -1,0 +1,17 @@
+id: clickjacking
+info:
+  name: "Clickjacking Protection Missing"
+  severity: low
+  description: "Detects missing clickjacking protections (X-Frame-Options / frame-ancestors)"
+  tags: [clickjacking, client-side, passive, compliance]
+  author: Wired
+
+inject: none
+detection: header_check
+
+payloads: []
+
+matchers:
+  headers:
+    X-Frame-Options: "MISSING"
+  body_patterns: []

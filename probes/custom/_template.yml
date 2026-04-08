@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════════════════════════
+# Akemi Custom Probe Template — Blank Skeleton
+# ═══════════════════════════════════════════════════════════════
+# Copy this file and modify it to create your own probes.
+# Place custom probes in probes/custom/ and they will be loaded
+# automatically by the template engine.
+#
+# Supported inject modes:  query_params | headers | body | none
+# Supported detection:     pattern | time | status_diff | header_check | oob | banner
+# Template variables:      {{OOB_URL}}, {{OOB_DOMAIN}}, {{TARGET}}, {{RANDOM}}
+
+id: custom-template
+info:
+  name: "Custom Probe Template"
+  severity: medium    # critical | high | medium | low | info
+  description: "Your custom probe description here"
+  tags: [custom]
+  author: YourName
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "YOUR_PAYLOAD_HERE"
+
+matchers:
+  body_patterns:
+    - "YOUR_MATCH_PATTERN"
+  status_codes: []
+  headers: {}
+
+# Uncomment for time-based detection:
+# time_payloads:
+#   delay_seconds: 3
+#   payloads:
+#     - "TIME_PAYLOAD_HERE"
+
+# Uncomment for OOB detection:
+# oob_payloads:
+#   - "{{OOB_URL}}"

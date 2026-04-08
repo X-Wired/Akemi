@@ -1,0 +1,25 @@
+id: el-injection
+info:
+  name: "Expression Language Injection"
+  severity: high
+  description: "Detects EL injection across Java EL, SpEL, and OGNL expression engines"
+  tags: [el, spel, ognl, injection, java, rce]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  # Canary
+  - "akemi${1337*1337}test"
+  - "akemi#{1337*1337}test"
+  - "akemi%{1337*1337}test"
+
+matchers:
+  body_patterns:
+    - "akemi1787569test"
+    - "(?i)javax\\.el\\.ELException"
+    - "(?i)SpelEvaluationException"
+    - "(?i)OgnlException"
+    - "(?i)PropertyNotFoundException"
+    - "(?i)ELResolver"

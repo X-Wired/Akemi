@@ -1,0 +1,19 @@
+id: cookie-security
+info:
+  name: "Insecure Cookie Configuration"
+  severity: low
+  description: "Detects cookies missing Secure, HttpOnly, or SameSite flags"
+  tags: [misconfig, cookie, passive, compliance]
+  author: Wired
+
+inject: none
+detection: cookie_flags
+
+payloads: []
+
+matchers:
+  cookie_flags:
+    - Secure
+    - HttpOnly
+    - SameSite
+  body_patterns: []

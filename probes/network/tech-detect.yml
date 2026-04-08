@@ -1,0 +1,90 @@
+id: tech-detect-ssh
+info:
+  name: SSH
+  author: Wired
+  severity: info
+  description: Detects SSH service banners on open TCP ports.
+  tags:
+    - network
+    - ssh
+protocol: tcp
+ports: ["22", "2222"]
+probe_string: "\r\n"
+matchers:
+  banner_patterns:
+    - '(?i)^SSH-.*'
+---
+id: tech-detect-http
+info:
+  name: HTTP Web Server
+  author: Wired
+  severity: info
+  description: Detects general HTTP web servers.
+  tags:
+    - network
+    - http
+protocol: tcp
+matchers:
+  banner_patterns:
+    - '(?i)^HTTP/1\.[01] \d{3}'
+---
+id: tech-detect-openssh
+info:
+  name: OpenSSH
+  author: Wired
+  severity: info
+  description: Detects OpenSSH specific banner.
+  tags:
+    - network
+    - ssh
+protocol: tcp
+matchers:
+  banner_patterns:
+    - '(?i)OpenSSH_[^ ]*'
+---
+id: tech-detect-aws
+info:
+  name: AWS (ELB/CloudFront/EC2)
+  author: Wired
+  severity: info
+  description: Detects AWS infrastructure via server headers.
+  tags:
+    - network
+    - cloud
+    - aws
+protocol: tcp
+matchers:
+  banner_patterns:
+    - '(?i)Server:\s+(awselb|AmazonS3|CloudFront)'
+---
+id: tech-detect-mysql
+info:
+  name: MySQL Database
+  author: Wired
+  severity: info
+  description: Detects MySQL database banner.
+  tags:
+    - network
+    - database
+protocol: tcp
+ports: ["3306"]
+probe_string: "\r\n"
+matchers:
+  banner_patterns:
+    - '(?i).*(mysql_native_password|mariadb).*'
+---
+id: tech-detect-smtp
+info:
+  name: SMTP Mail Server
+  author: Wired
+  severity: info
+  description: Detects SMTP service banners on open TCP ports.
+  tags:
+    - network
+    - smtp
+protocol: tcp
+ports: ["25", "465", "587", "2525"]
+probe_string: "EHLO akemi.local\r\n"
+matchers:
+  banner_patterns:
+    - '(?i)220.*(SMTP|Postfix|Exim)'

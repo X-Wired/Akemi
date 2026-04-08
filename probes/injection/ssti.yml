@@ -1,0 +1,22 @@
+id: ssti
+info:
+  name: "Server-Side Template Injection"
+  severity: high
+  description: "Detects SSTI by injecting math expressions across multiple template engines"
+  tags: [ssti, injection, rce, template]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  # General canary
+  - "akemi{{1337*1337}}test"
+  - "akemi${1337*1337}test"
+  - "akemi<%= 1337*1337 %>test"
+  - "akemi{% set x = 1337 * 1337 %}{{x}}test"
+  - "akemi<#assign x=1337*1337>${x}test"
+
+matchers:
+  body_patterns:
+    - "akemi1787569test"

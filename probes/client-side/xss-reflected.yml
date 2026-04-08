@@ -1,0 +1,39 @@
+id: xss-reflected
+info:
+  name: "Reflected XSS"
+  severity: medium
+  description: "Detects reflected cross-site scripting by checking payload reflection in response body"
+  tags: [xss, injection, client-side]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "<script>alert(1)</script>"
+  - "\"><script>alert(1)</script>"
+  - "'><script>alert(1)</script>"
+  - "<img src=x onerror=alert(1)>"
+  - "javascript:alert(1)"
+  - "<svg onload=alert(1)>"
+  - "\"><img src=x onerror=alert(1)>"
+  - "<body onload=alert(1)>"
+  - "'-alert(1)-'"
+  - "\"-alert(1)-\""
+  - "<details open ontoggle=alert(1)>"
+  - "<marquee onstart=alert(1)>"
+  - "<input onfocus=alert(1) autofocus>"
+  - "<iframe src=\"javascript:alert(1)\">"
+  - "<math><mtext><table><mglyph><svg><mtext><textarea><path id=\"x\"><animate attributeName=\"d\" values=\"M0,0\" /></textarea></mtext></svg></mglyph></table></mtext></math>"
+
+matchers:
+  body_patterns:
+    - "<script>alert\\(1\\)</script>"
+    - "<img src=x onerror=alert\\(1\\)>"
+    - "<svg onload=alert\\(1\\)>"
+    - "onerror=alert\\(1\\)"
+    - "onload=alert\\(1\\)"
+    - "onfocus=alert\\(1\\)"
+    - "ontoggle=alert\\(1\\)"
+    - "onstart=alert\\(1\\)"
+    - "javascript:alert\\(1\\)"

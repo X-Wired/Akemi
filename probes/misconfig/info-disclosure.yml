@@ -1,0 +1,26 @@
+id: info-disclosure
+info:
+  name: "Information Disclosure"
+  severity: medium
+  description: "Passive detection of sensitive information leaking in responses"
+  tags: [misconfig, info-disclosure, passive, sensitive]
+  author: Wired
+
+inject: none
+detection: pattern
+
+payloads: []
+
+matchers:
+  body_patterns:
+    - "(?i)DB_PASSWORD"
+    - "(?i)DATABASE_URL"
+    - "(?i)AWS_SECRET_ACCESS_KEY"
+    - "(?i)PRIVATE.KEY"
+    - "(?i)-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----"
+    - "(?i)password\\s*[=:]\\s*['\"][^'\"]{3,}"
+    - "(?i)api[_-]?key\\s*[=:]"
+    - "(?i)secret[_-]?key\\s*[=:]"
+    - "(?i)stack\\s*trace"
+    - "(?i)Traceback \\(most recent"
+    - "(?i)Exception in thread"
