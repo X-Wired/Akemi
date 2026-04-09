@@ -223,7 +223,7 @@ fn process_banner(
 }
 
 /// Try a TLS connection. Returns (optional CN, bytes read after handshake).
-async fn try_tls_connect(_addr: &str) -> Result<(Option<String>, Vec<u8>), Box<dyn std::error::Error + Send + Sync>> {
+async fn try_tls_connect(addr: &str) -> Result<(Option<String>, Vec<u8>), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(not(feature = "tls-native"))]
     {
         let err = std::io::Error::new(
