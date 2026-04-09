@@ -68,6 +68,21 @@ Or see the release page for pre-built binaries.
 - Go `1.25.0` or higher
 - Rust stable toolchain
 
+### Linux Installation
+
+For Linux users, a dedicated installer script is provided to handle dependencies and automated building:
+
+```bash
+chmod +x installer.sh
+./installer.sh
+```
+
+The script will:
+- Install system dependencies (`libpcap-dev`, `libssl-dev`, etc.)
+- Verify/Install Go and Rust toolchains
+- Compile both the core engine and the high-performance reconnaissance engine
+- Optionally symlink binaries to `/usr/local/bin`
+
 ---
 
 ##  Common Workflows
