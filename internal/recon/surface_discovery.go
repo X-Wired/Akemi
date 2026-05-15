@@ -2,12 +2,14 @@ package recon
 
 import (
 	core "Akemi/internal/core"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"sort"
@@ -28,29 +30,81 @@ type SecretFinding struct {
 
 // APIEndpointFinding captures passive API surface discovery details.
 type APIEndpointFinding struct {
-	URL        string   `json:"url"`
-	Path       string   `json:"path,omitempty"`
-	Method     string   `json:"method,omitempty"`
-	APIType    string   `json:"api_type"`
-	Version    string   `json:"version,omitempty"`
-	StatusCode int      `json:"status_code,omitempty"`
-	Status     string   `json:"status,omitempty"`
-	SourceURLs []string `json:"source_urls,omitempty"`
-	Evidence   []string `json:"evidence,omitempty"`
+	URL          string         `json:"url"`
+	Path         string         `json:"path,omitempty"`
+	Method       string         `json:"method,omitempty"`
+	APIType      string         `json:"api_type"`
+	Version      string         `json:"version,omitempty"`
+	StatusCode   int            `json:"status_code,omitempty"`
+	Status       string         `json:"status,omitempty"`
+	ContentType  string         `json:"content_type,omitempty"`
+	AuthRequired bool           `json:"auth_required,omitempty"`
+	Confidence   float64        `json:"confidence,omitempty"`
+	SourceURLs   []string       `json:"source_urls,omitempty"`
+	SourceKinds  []string       `json:"source_kinds,omitempty"`
+	Evidence     []string       `json:"evidence,omitempty"`
+	Parameters   []APIParameter `json:"parameters,omitempty"`
 }
 
 // APISpecFinding tracks discovered API specs and their metadata.
 type APISpecFinding struct {
-	URL           string   `json:"url"`
-	APIType       string   `json:"api_type"`
-	Format        string   `json:"format,omitempty"`
-	Title         string   `json:"title,omitempty"`
-	Version       string   `json:"version,omitempty"`
-	StatusCode    int      `json:"status_code,omitempty"`
-	Status        string   `json:"status,omitempty"`
-	SourceURLs    []string `json:"source_urls,omitempty"`
-	Evidence      []string `json:"evidence,omitempty"`
-	EndpointCount int      `json:"endpoint_count,omitempty"`
+	URL                     string   `json:"url"`
+	APIType                 string   `json:"api_type"`
+	Format                  string   `json:"format,omitempty"`
+	Title                   string   `json:"title,omitempty"`
+	Version                 string   `json:"version,omitempty"`
+	StatusCode              int      `json:"status_code,omitempty"`
+	Status                  string   `json:"status,omitempty"`
+	ContentType             string   `json:"content_type,omitempty"`
+	SourceURLs              []string `json:"source_urls,omitempty"`
+	Evidence                []string `json:"evidence,omitempty"`
+	EndpointCount           int      `json:"endpoint_count,omitempty"`
+	DiscoveredEndpointCount int      `json:"discovered_endpoint_count,omitempty"`
+	CoveragePercent         float64  `json:"coverage_percent,omitempty"`
+}
+
+// APIHuntRequest configures Akemi's richer API Hunter workflow.
+type APIHuntRequest struct {
+	StartURL       string
+	DiscoveredURLs []string
+	Mode           string
+	Wordlist       []string
+	WordlistFile   string
+	AuthCookies    []string
+	MaxCandidates  int
+	Threads        int
+	Timeout        int
+}
+
+// APIHuntResult aggregates API Hunter output.
+type APIHuntResult struct {
+	StartURL      string
+	Mode          string
+	APIEndpoints  []APIEndpointFinding
+	APISpecs      []APISpecFinding
+	Parameters    []APIParameterFinding
+	Counts        map[string]int
+	StageErrors   []string
+	SourceSummary map[string]int
+}
+
+// APIParameter describes a parameter tied to an API endpoint.
+type APIParameter struct {
+	Name     string   `json:"name"`
+	In       string   `json:"in,omitempty"`
+	Required bool     `json:"required,omitempty"`
+	Type     string   `json:"type,omitempty"`
+	Sources  []string `json:"sources,omitempty"`
+}
+
+// APIParameterFinding aggregates API parameters across endpoints.
+type APIParameterFinding struct {
+	Name      string   `json:"name"`
+	In        string   `json:"in,omitempty"`
+	Type      string   `json:"type,omitempty"`
+	Required  bool     `json:"required,omitempty"`
+	Endpoints []string `json:"endpoints,omitempty"`
+	Sources   []string `json:"sources,omitempty"`
 }
 
 type clientSurfaceAnalysis struct {
@@ -84,16 +138,33 @@ type openAPISpecDoc struct {
 		Title   string `json:"title" yaml:"title"`
 		Version string `json:"version" yaml:"version"`
 	} `json:"info" yaml:"info"`
-	Paths map[string]map[string]interface{} `json:"paths" yaml:"paths"`
+	Paths map[string]map[string]openAPIOperation `json:"paths" yaml:"paths"`
+}
+
+type openAPIOperation struct {
+	Parameters  []openAPIParameter `json:"parameters" yaml:"parameters"`
+	RequestBody struct {
+		Content map[string]struct {
+			Schema map[string]interface{} `json:"schema" yaml:"schema"`
+		} `json:"content" yaml:"content"`
+	} `json:"requestBody" yaml:"requestBody"`
+}
+
+type openAPIParameter struct {
+	Name     string                 `json:"name" yaml:"name"`
+	In       string                 `json:"in" yaml:"in"`
+	Required bool                   `json:"required" yaml:"required"`
+	Schema   map[string]interface{} `json:"schema" yaml:"schema"`
 }
 
 var (
-	configResourcePattern = regexp.MustCompile(`(?i)["']([^"'?#\s]*(?:config|settings|env|runtime|manifest|app-config|site-config)[^"'?#\s]*(?:\.json|\.js|/manifest\.json|/manifest)?)["']`)
-	graphQLPathPattern    = regexp.MustCompile(`(?i)(/[\w./-]*graphql(?:/[\w./-]+)?)`)
-	restVersionedPattern  = regexp.MustCompile(`(?i)(/(?:api/)?v[0-9]+(?:/[a-zA-Z0-9_.{}\-/]+)+)`)
-	restPrefixedPattern   = regexp.MustCompile(`(?i)(/(?:api|rest|services?)(?:/[a-zA-Z0-9_.{}\-/]+)+)`)
-	openAPISpecPattern    = regexp.MustCompile(`(?i)(/\.well-known/openapi\.json|/openapi\.(?:json|yaml)|/swagger\.(?:json|yaml)|/v[23]/api-docs)`)
-	versionSegmentPattern = regexp.MustCompile(`(?i)/(v[0-9]+)(?:/|$)`)
+	configResourcePattern  = regexp.MustCompile(`(?i)["']([^"'?#\s]*(?:config|settings|env|runtime|manifest|app-config|site-config)[^"'?#\s]*(?:\.json|\.js|/manifest\.json|/manifest)?)["']`)
+	graphQLPathPattern     = regexp.MustCompile(`(?i)(/[\w./-]*graphql(?:/[\w./-]+)?)`)
+	apiURLWithQueryPattern = regexp.MustCompile(`(?i)["']((?:/(?:api|rest|services?|graphql)[^"'\s?#]+(?:/[^"'\s?#]+)*)\?[^"'\s]+)["']`)
+	restVersionedPattern   = regexp.MustCompile(`(?i)(/(?:api/)?v[0-9]+(?:/[a-zA-Z0-9_.{}\-/]+)+)`)
+	restPrefixedPattern    = regexp.MustCompile(`(?i)(/(?:api|rest|services?)(?:/[a-zA-Z0-9_.{}\-/]+)+)`)
+	openAPISpecPattern     = regexp.MustCompile(`(?i)(/\.well-known/openapi\.json|/openapi\.(?:json|yaml)|/swagger\.(?:json|yaml)|/v[23]/api-docs)`)
+	versionSegmentPattern  = regexp.MustCompile(`(?i)/(v[0-9]+)(?:/|$)`)
 )
 
 var knownSpecPaths = []string{
@@ -128,6 +199,13 @@ var graphQLMarkers = []string{
 }
 
 func collectSeedURLs(startURL string, client *http.Client) []string {
+	return collectSeedURLsWithContext(context.Background(), startURL, client)
+}
+
+func collectSeedURLsWithContext(ctx context.Context, startURL string, client *http.Client) []string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	startURL = core.EnsureProtocol(startURL)
 	base, err := url.Parse(startURL)
 	if err != nil {
@@ -146,7 +224,7 @@ func collectSeedURLs(startURL string, client *http.Client) []string {
 	robotsURL := base.ResolveReference(&url.URL{Path: "/robots.txt"}).String()
 	var sitemapQueue []string
 
-	if resp, err := client.Get(robotsURL); err == nil {
+	if resp, err := clientGetWithContext(ctx, client, robotsURL); err == nil {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
@@ -165,6 +243,9 @@ func collectSeedURLs(startURL string, client *http.Client) []string {
 
 	visited := make(map[string]struct{})
 	for len(sitemapQueue) > 0 {
+		if ctx.Err() != nil {
+			break
+		}
 		current := sitemapQueue[0]
 		sitemapQueue = sitemapQueue[1:]
 
@@ -177,7 +258,7 @@ func collectSeedURLs(startURL string, client *http.Client) []string {
 		}
 		visited[normalized] = struct{}{}
 
-		resp, err := client.Get(normalized)
+		resp, err := clientGetWithContext(ctx, client, normalized)
 		if err != nil {
 			continue
 		}
@@ -204,6 +285,14 @@ func collectSeedURLs(startURL string, client *http.Client) []string {
 	}
 	sort.Strings(final)
 	return final
+}
+
+func clientGetWithContext(ctx context.Context, client *http.Client, rawURL string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(req)
 }
 
 func parseRobotsTxt(base *url.URL, body string) ([]string, []string) {
@@ -339,6 +428,80 @@ func DiscoverAPISurface(startURL string, discoveredURLs []string, configResource
 	sortAPISpecFindings(specs)
 
 	return endpoints, specs, nil
+}
+
+// HuntAPISurface runs the first-class API Hunter workflow. It keeps the
+// existing passive API discovery as the seed, then optionally adds safe-active
+// endpoint probing and wordlist candidates without sending mutation requests.
+func HuntAPISurface(req APIHuntRequest, client *http.Client) (*APIHuntResult, error) {
+	req = normalizeAPIHuntRequest(req)
+	if client == nil {
+		client = core.CreateHTTPClientWithCookies(req.Timeout, req.AuthCookies)
+	}
+
+	base, err := url.Parse(req.StartURL)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing base URL: %w", err)
+	}
+
+	result := &APIHuntResult{
+		StartURL:      req.StartURL,
+		Mode:          req.Mode,
+		SourceSummary: map[string]int{},
+	}
+
+	discoveredURLs := uniqueStrings(append([]string{req.StartURL}, req.DiscoveredURLs...))
+	if len(req.DiscoveredURLs) == 0 {
+		discoveredURLs = uniqueStrings(append(discoveredURLs, collectSeedURLs(req.StartURL, client)...))
+	}
+
+	var configResources []string
+	if resp, err := client.Get(req.StartURL); err == nil {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "html") || len(body) > 0 {
+			analysis := analyzeHTMLClientSurface(req.StartURL, string(body), client)
+			discoveredURLs = uniqueStrings(append(discoveredURLs, analysis.Endpoints...))
+			configResources = uniqueStrings(append(configResources, analysis.ConfigResources...))
+			result.APIEndpoints = mergeAPIEndpointList(result.APIEndpoints, analysis.APIEndpoints)
+			result.APISpecs = mergeAPISpecList(result.APISpecs, analysis.APISpecs)
+		}
+	} else {
+		result.StageErrors = append(result.StageErrors, "fetch_start_url: "+err.Error())
+	}
+
+	passiveEndpoints, passiveSpecs, err := DiscoverAPISurface(req.StartURL, discoveredURLs, configResources, client)
+	if err != nil {
+		result.StageErrors = append(result.StageErrors, "passive_discovery: "+err.Error())
+	} else {
+		result.APIEndpoints = mergeAPIEndpointList(result.APIEndpoints, passiveEndpoints)
+		result.APISpecs = mergeAPISpecList(result.APISpecs, passiveSpecs)
+	}
+
+	for _, candidate := range apiWordlistCandidates(base, req.Wordlist) {
+		if len(result.APIEndpoints) >= req.MaxCandidates {
+			break
+		}
+		if finding, ok := classifyAPIEndpoint(candidate, base, req.StartURL, "api_hunter_wordlist"); ok {
+			result.APIEndpoints = mergeAPIEndpointList(result.APIEndpoints, []APIEndpointFinding{finding})
+		}
+	}
+
+	if req.Mode == "safe-active" {
+		result.APIEndpoints = probeAPIEndpointsSafe(result.APIEndpoints, client, req.MaxCandidates)
+	}
+
+	result.APIEndpoints = finalizeAPIEndpointList(result.APIEndpoints)
+	result.Parameters = aggregateAPIParameters(result.APIEndpoints)
+	result.APISpecs = finalizeAPISpecCoverage(result.APISpecs, result.APIEndpoints)
+	result.SourceSummary = summarizeAPISources(result.APIEndpoints, result.APISpecs)
+	result.Counts = map[string]int{
+		"api_endpoints": len(result.APIEndpoints),
+		"api_specs":     len(result.APISpecs),
+		"parameters":    len(result.Parameters),
+		"stage_errors":  len(result.StageErrors),
+	}
+	return result, nil
 }
 
 func analyzeHTMLClientSurface(pageURL string, body string, client *http.Client) *clientSurfaceAnalysis {
@@ -585,6 +748,11 @@ func extractAPIEndpointsFromContent(content string, sourceURL string, resolution
 			addCandidate(item[1], sourceKind)
 		}
 	}
+	for _, item := range apiURLWithQueryPattern.FindAllStringSubmatch(content, -1) {
+		if len(item) > 1 {
+			addCandidate(item[1], sourceKind)
+		}
+	}
 	for _, item := range graphQLPathPattern.FindAllStringSubmatch(content, -1) {
 		if len(item) > 1 {
 			addCandidate(item[1], sourceKind)
@@ -649,33 +817,39 @@ func fetchOpenAPISpec(specURL string, base *url.URL, client *http.Client) (APISp
 	}
 
 	spec := APISpecFinding{
-		URL:        specURL,
-		APIType:    "openapi",
-		Format:     format,
-		Title:      doc.Info.Title,
-		Version:    doc.Info.Version,
-		StatusCode: resp.StatusCode,
-		Status:     normalizeAPIHTTPStatus(resp.StatusCode, resp.Status),
-		SourceURLs: []string{specURL},
-		Evidence:   []string{"openapi_spec"},
+		URL:         specURL,
+		APIType:     "openapi",
+		Format:      format,
+		Title:       doc.Info.Title,
+		Version:     doc.Info.Version,
+		StatusCode:  resp.StatusCode,
+		Status:      normalizeAPIHTTPStatus(resp.StatusCode, resp.Status),
+		ContentType: resp.Header.Get("Content-Type"),
+		SourceURLs:  []string{specURL},
+		Evidence:    []string{"openapi_spec"},
 	}
 
 	var endpoints []APIEndpointFinding
 	for rawPath, methods := range doc.Paths {
-		for method := range methods {
+		for method, operation := range methods {
 			method = strings.ToUpper(strings.TrimSpace(method))
 			if _, ok := openAPIHTTPMethods[method]; !ok {
 				continue
 			}
 			fullURL := buildSpecEndpointURL(base, rawPath)
+			params := openAPIParameters(operation.Parameters, specURL)
+			params = append(params, pathParameters(rawPath, specURL)...)
 			endpoints = append(endpoints, APIEndpointFinding{
-				URL:        fullURL,
-				Path:       rawPath,
-				Method:     method,
-				APIType:    "openapi",
-				Version:    extractVersion(rawPath),
-				SourceURLs: []string{specURL},
-				Evidence:   []string{"openapi_spec"},
+				URL:         fullURL,
+				Path:        rawPath,
+				Method:      method,
+				APIType:     "openapi",
+				Version:     extractVersion(rawPath),
+				Confidence:  0.98,
+				SourceURLs:  []string{specURL},
+				SourceKinds: []string{"openapi_spec"},
+				Evidence:    []string{"openapi_spec"},
+				Parameters:  params,
 			})
 			spec.EndpointCount++
 		}
@@ -719,13 +893,16 @@ func classifyAPIEndpoint(candidate string, base *url.URL, sourceURL string, evid
 	}
 
 	return APIEndpointFinding{
-		URL:        resolved,
-		Path:       parsed.Path,
-		Method:     "",
-		APIType:    apiType,
-		Version:    extractVersion(parsed.Path),
-		SourceURLs: []string{sourceURL},
-		Evidence:   []string{evidence},
+		URL:         resolved,
+		Path:        parsed.Path,
+		Method:      "",
+		APIType:     apiType,
+		Version:     extractVersion(parsed.Path),
+		Confidence:  confidenceForAPIEvidence(apiType, evidence),
+		SourceURLs:  []string{sourceURL},
+		SourceKinds: []string{evidence},
+		Evidence:    []string{evidence},
+		Parameters:  endpointParameters(resolved, parsed.Path, sourceURL),
 	}, true
 }
 
@@ -886,6 +1063,8 @@ func mergeAPIEndpointFindings(existing APIEndpointFinding, incoming APIEndpointF
 	if existing.URL == "" {
 		incoming.SourceURLs = uniqueStrings(incoming.SourceURLs)
 		incoming.Evidence = uniqueStrings(incoming.Evidence)
+		incoming.SourceKinds = uniqueStrings(incoming.SourceKinds)
+		incoming.Parameters = mergeAPIParameters(nil, incoming.Parameters)
 		return incoming
 	}
 	existing.SourceURLs = uniqueStrings(append(existing.SourceURLs, incoming.SourceURLs...))
@@ -908,6 +1087,15 @@ func mergeAPIEndpointFindings(existing APIEndpointFinding, incoming APIEndpointF
 	if existing.Status == "" && incoming.Status != "" {
 		existing.Status = incoming.Status
 	}
+	if existing.ContentType == "" {
+		existing.ContentType = incoming.ContentType
+	}
+	existing.AuthRequired = existing.AuthRequired || incoming.AuthRequired
+	if incoming.Confidence > existing.Confidence {
+		existing.Confidence = incoming.Confidence
+	}
+	existing.SourceKinds = uniqueStrings(append(existing.SourceKinds, incoming.SourceKinds...))
+	existing.Parameters = mergeAPIParameters(existing.Parameters, incoming.Parameters)
 	return existing
 }
 
@@ -934,8 +1122,17 @@ func mergeAPISpecFindings(existing APISpecFinding, incoming APISpecFinding) APIS
 	if existing.Status == "" && incoming.Status != "" {
 		existing.Status = incoming.Status
 	}
+	if existing.ContentType == "" {
+		existing.ContentType = incoming.ContentType
+	}
 	if incoming.EndpointCount > existing.EndpointCount {
 		existing.EndpointCount = incoming.EndpointCount
+	}
+	if incoming.DiscoveredEndpointCount > existing.DiscoveredEndpointCount {
+		existing.DiscoveredEndpointCount = incoming.DiscoveredEndpointCount
+	}
+	if incoming.CoveragePercent > existing.CoveragePercent {
+		existing.CoveragePercent = incoming.CoveragePercent
 	}
 	return existing
 }
@@ -1034,8 +1231,10 @@ func enrichAPIEndpointStatuses(endpoints []APIEndpointFinding, client *http.Clie
 		return endpoints
 	}
 	type statusResult struct {
-		code   int
-		status string
+		code         int
+		status       string
+		contentType  string
+		authRequired bool
 	}
 	cache := make(map[string]statusResult, len(endpoints))
 	for i := range endpoints {
@@ -1049,6 +1248,10 @@ func enrichAPIEndpointStatuses(endpoints []APIEndpointFinding, client *http.Clie
 			if endpoints[i].Status == "" && cached.status != "" {
 				endpoints[i].Status = cached.status
 			}
+			if endpoints[i].ContentType == "" {
+				endpoints[i].ContentType = cached.contentType
+			}
+			endpoints[i].AuthRequired = endpoints[i].AuthRequired || cached.authRequired
 			continue
 		}
 		req, err := http.NewRequest(http.MethodGet, endpoints[i].URL, nil)
@@ -1063,8 +1266,10 @@ func enrichAPIEndpointStatuses(endpoints []APIEndpointFinding, client *http.Clie
 		}
 		_ = resp.Body.Close()
 		cached := statusResult{
-			code:   resp.StatusCode,
-			status: normalizeAPIHTTPStatus(resp.StatusCode, resp.Status),
+			code:         resp.StatusCode,
+			status:       normalizeAPIHTTPStatus(resp.StatusCode, resp.Status),
+			contentType:  resp.Header.Get("Content-Type"),
+			authRequired: responseLooksAuthRequired(resp),
 		}
 		cache[endpoints[i].URL] = cached
 		if endpoints[i].StatusCode == 0 {
@@ -1072,6 +1277,13 @@ func enrichAPIEndpointStatuses(endpoints []APIEndpointFinding, client *http.Clie
 		}
 		if endpoints[i].Status == "" {
 			endpoints[i].Status = cached.status
+		}
+		if endpoints[i].ContentType == "" {
+			endpoints[i].ContentType = cached.contentType
+		}
+		endpoints[i].AuthRequired = endpoints[i].AuthRequired || cached.authRequired
+		if endpoints[i].Confidence == 0 {
+			endpoints[i].Confidence = confidenceForAPIStatus(endpoints[i].APIType, resp.StatusCode)
 		}
 	}
 	return endpoints
@@ -1106,6 +1318,351 @@ func sortAPIEndpointFindings(findings []APIEndpointFinding) {
 
 func sortAPISpecFindings(findings []APISpecFinding) {
 	sort.Slice(findings, func(i, j int) bool { return findings[i].URL < findings[j].URL })
+}
+
+func normalizeAPIHuntRequest(req APIHuntRequest) APIHuntRequest {
+	req.StartURL = core.EnsureProtocol(strings.TrimSpace(req.StartURL))
+	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+	if req.Mode == "" {
+		req.Mode = "safe-active"
+	}
+	if req.Mode != "passive" && req.Mode != "safe-active" {
+		req.Mode = "safe-active"
+	}
+	if req.Timeout <= 0 {
+		req.Timeout = 10
+	}
+	if req.Threads <= 0 {
+		req.Threads = 10
+	}
+	if req.MaxCandidates <= 0 {
+		req.MaxCandidates = 250
+	}
+	if req.WordlistFile != "" {
+		if data, err := os.ReadFile(req.WordlistFile); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "#") {
+					req.Wordlist = append(req.Wordlist, line)
+				}
+			}
+		}
+	}
+	if len(req.Wordlist) == 0 {
+		req.Wordlist = defaultAPIHunterWordlist()
+	}
+	return req
+}
+
+func defaultAPIHunterWordlist() []string {
+	return []string{
+		"/api", "/api/v1", "/api/v2", "/api/v3", "/rest", "/services",
+		"/graphql", "/graphiql", "/playground", "/openapi.json", "/swagger.json",
+		"/swagger.yaml", "/api-docs", "/v2/api-docs", "/v3/api-docs",
+		"/swagger-ui", "/swagger-ui/index.html", "/redoc", "/docs",
+		"/actuator", "/actuator/health", "/health", "/metrics",
+	}
+}
+
+func apiWordlistCandidates(base *url.URL, wordlist []string) []string {
+	results := make(map[string]struct{})
+	for _, item := range wordlist {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if !strings.HasPrefix(item, "/") {
+			item = "/" + item
+		}
+		if resolved, ok := resolveSameHostURL(base, item); ok {
+			results[resolved] = struct{}{}
+		}
+	}
+	return mapKeys(results)
+}
+
+func probeAPIEndpointsSafe(endpoints []APIEndpointFinding, client *http.Client, maxCandidates int) []APIEndpointFinding {
+	if client == nil || len(endpoints) == 0 {
+		return endpoints
+	}
+	if maxCandidates <= 0 || maxCandidates > len(endpoints) {
+		maxCandidates = len(endpoints)
+	}
+	for i := 0; i < maxCandidates; i++ {
+		endpoint := &endpoints[i]
+		if endpoint.URL == "" {
+			continue
+		}
+		for _, method := range []string{http.MethodHead, http.MethodOptions, http.MethodGet} {
+			req, err := http.NewRequest(method, endpoint.URL, nil)
+			if err != nil {
+				continue
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				continue
+			}
+			_ = resp.Body.Close()
+			if endpoint.StatusCode == 0 || method == http.MethodGet {
+				endpoint.StatusCode = resp.StatusCode
+				endpoint.Status = normalizeAPIHTTPStatus(resp.StatusCode, resp.Status)
+				endpoint.ContentType = firstNonEmpty(endpoint.ContentType, resp.Header.Get("Content-Type"))
+				endpoint.AuthRequired = endpoint.AuthRequired || responseLooksAuthRequired(resp)
+				endpoint.Evidence = uniqueStrings(append(endpoint.Evidence, "safe_probe:"+method))
+				endpoint.SourceKinds = uniqueStrings(append(endpoint.SourceKinds, "safe_probe"))
+				if endpoint.Confidence == 0 || endpoint.Confidence < confidenceForAPIStatus(endpoint.APIType, resp.StatusCode) {
+					endpoint.Confidence = confidenceForAPIStatus(endpoint.APIType, resp.StatusCode)
+				}
+			}
+			if method == http.MethodOptions {
+				if allow := resp.Header.Get("Allow"); allow != "" && endpoint.Method == "" {
+					endpoint.Evidence = uniqueStrings(append(endpoint.Evidence, "allow:"+allow))
+				}
+			}
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				if endpoint.Method == "" && method == http.MethodGet {
+					endpoint.Method = http.MethodGet
+				}
+				break
+			}
+		}
+	}
+	return endpoints
+}
+
+func responseLooksAuthRequired(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return true
+	}
+	return strings.TrimSpace(resp.Header.Get("WWW-Authenticate")) != ""
+}
+
+func finalizeAPIEndpointList(endpoints []APIEndpointFinding) []APIEndpointFinding {
+	for i := range endpoints {
+		if endpoints[i].Confidence == 0 {
+			endpoints[i].Confidence = confidenceForAPIStatus(endpoints[i].APIType, endpoints[i].StatusCode)
+		}
+		endpoints[i].SourceURLs = uniqueStrings(endpoints[i].SourceURLs)
+		endpoints[i].SourceKinds = uniqueStrings(endpoints[i].SourceKinds)
+		endpoints[i].Evidence = uniqueStrings(endpoints[i].Evidence)
+		endpoints[i].Parameters = mergeAPIParameters(nil, endpoints[i].Parameters)
+	}
+	sortAPIEndpointFindings(endpoints)
+	return endpoints
+}
+
+func finalizeAPISpecCoverage(specs []APISpecFinding, endpoints []APIEndpointFinding) []APISpecFinding {
+	for i := range specs {
+		count := 0
+		for _, endpoint := range endpoints {
+			for _, source := range endpoint.SourceURLs {
+				if source == specs[i].URL {
+					count++
+					break
+				}
+			}
+		}
+		specs[i].DiscoveredEndpointCount = count
+		if specs[i].EndpointCount > 0 {
+			specs[i].CoveragePercent = float64(count) / float64(specs[i].EndpointCount) * 100
+			if specs[i].CoveragePercent > 100 {
+				specs[i].CoveragePercent = 100
+			}
+		}
+		specs[i].SourceURLs = uniqueStrings(specs[i].SourceURLs)
+		specs[i].Evidence = uniqueStrings(specs[i].Evidence)
+	}
+	sortAPISpecFindings(specs)
+	return specs
+}
+
+func summarizeAPISources(endpoints []APIEndpointFinding, specs []APISpecFinding) map[string]int {
+	summary := map[string]int{}
+	for _, endpoint := range endpoints {
+		for _, source := range endpoint.SourceKinds {
+			summary[source]++
+		}
+	}
+	for _, spec := range specs {
+		for _, evidence := range spec.Evidence {
+			summary[evidence]++
+		}
+	}
+	return summary
+}
+
+func aggregateAPIParameters(endpoints []APIEndpointFinding) []APIParameterFinding {
+	merged := map[string]APIParameterFinding{}
+	for _, endpoint := range endpoints {
+		for _, param := range endpoint.Parameters {
+			name := strings.TrimSpace(param.Name)
+			if name == "" {
+				continue
+			}
+			key := strings.ToLower(param.In) + "|" + strings.ToLower(name)
+			existing := merged[key]
+			if existing.Name == "" {
+				existing.Name = name
+				existing.In = param.In
+				existing.Type = param.Type
+				existing.Required = param.Required
+			}
+			if param.Required {
+				existing.Required = true
+			}
+			if existing.Type == "" {
+				existing.Type = param.Type
+			}
+			existing.Endpoints = uniqueStrings(append(existing.Endpoints, endpoint.URL))
+			existing.Sources = uniqueStrings(append(existing.Sources, param.Sources...))
+			merged[key] = existing
+		}
+	}
+	out := make([]APIParameterFinding, 0, len(merged))
+	for _, item := range merged {
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].In == out[j].In {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].In < out[j].In
+	})
+	return out
+}
+
+func endpointParameters(rawURL string, rawPath string, source string) []APIParameter {
+	var params []APIParameter
+	if parsed, err := url.Parse(rawURL); err == nil {
+		for name := range parsed.Query() {
+			params = append(params, APIParameter{Name: name, In: "query", Sources: []string{source}})
+		}
+	}
+	params = append(params, pathParameters(rawPath, source)...)
+	return mergeAPIParameters(nil, params)
+}
+
+func pathParameters(rawPath string, source string) []APIParameter {
+	var params []APIParameter
+	for _, segment := range strings.Split(rawPath, "/") {
+		segment = strings.TrimSpace(segment)
+		switch {
+		case strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}"):
+			name := strings.TrimSuffix(strings.TrimPrefix(segment, "{"), "}")
+			params = append(params, APIParameter{Name: name, In: "path", Required: true, Sources: []string{source}})
+		case strings.HasPrefix(segment, ":") && len(segment) > 1:
+			params = append(params, APIParameter{Name: strings.TrimPrefix(segment, ":"), In: "path", Required: true, Sources: []string{source}})
+		}
+	}
+	return params
+}
+
+func openAPIParameters(params []openAPIParameter, source string) []APIParameter {
+	out := make([]APIParameter, 0, len(params))
+	for _, param := range params {
+		if strings.TrimSpace(param.Name) == "" {
+			continue
+		}
+		out = append(out, APIParameter{
+			Name:     param.Name,
+			In:       param.In,
+			Required: param.Required,
+			Type:     schemaType(param.Schema),
+			Sources:  []string{source},
+		})
+	}
+	return out
+}
+
+func schemaType(schema map[string]interface{}) string {
+	if len(schema) == 0 {
+		return ""
+	}
+	if t, ok := schema["type"].(string); ok {
+		return t
+	}
+	return ""
+}
+
+func mergeAPIParameters(existing []APIParameter, incoming []APIParameter) []APIParameter {
+	merged := make(map[string]APIParameter, len(existing)+len(incoming))
+	for _, param := range append(existing, incoming...) {
+		name := strings.TrimSpace(param.Name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(param.In) + "|" + strings.ToLower(name)
+		current := merged[key]
+		if current.Name == "" {
+			current = param
+		} else {
+			current.Required = current.Required || param.Required
+			if current.Type == "" {
+				current.Type = param.Type
+			}
+			current.Sources = uniqueStrings(append(current.Sources, param.Sources...))
+		}
+		merged[key] = current
+	}
+	out := make([]APIParameter, 0, len(merged))
+	for _, param := range merged {
+		param.Sources = uniqueStrings(param.Sources)
+		out = append(out, param)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].In == out[j].In {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].In < out[j].In
+	})
+	return out
+}
+
+func confidenceForAPIEvidence(apiType string, evidence string) float64 {
+	switch evidence {
+	case "openapi_spec":
+		return 0.98
+	case "api_hunter_wordlist":
+		return 0.45
+	case "html", "inline_js", "external_js", "config_js", "config_json":
+		return 0.78
+	case "discovered_url", "config_resource":
+		return 0.68
+	default:
+		if apiType == "graphql" {
+			return 0.72
+		}
+		return 0.60
+	}
+}
+
+func confidenceForAPIStatus(apiType string, statusCode int) float64 {
+	switch {
+	case statusCode >= 200 && statusCode < 300:
+		return 0.88
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+		return 0.82
+	case statusCode == http.StatusBadRequest && apiType == "graphql":
+		return 0.86
+	case statusCode >= 300 && statusCode < 500:
+		return 0.65
+	case statusCode >= 500:
+		return 0.55
+	default:
+		return 0.50
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func maskSecretValue(value string) string {

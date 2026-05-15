@@ -30,6 +30,7 @@ type SubdomainConfig struct {
 	CheckAlive   bool   // Probe HTTP/HTTPS for live hosts
 	UseCrtSh     bool   // Query crt.sh certificate transparency logs
 	Permutate    bool   // Generate permutations from found subdomains
+	Quiet        bool   // Suppress terminal progress output when embedded in TUI/service flows
 }
 
 // Common subdomain wordlist used when no file is provided.
@@ -204,13 +205,17 @@ func EnumerateSubdomains(domain string, cfg SubdomainConfig) ([]SubdomainResult,
 	}
 	proxyMode := proxy.ProxyEnabled()
 	if proxyMode && !cfg.CheckAlive {
-		fmt.Println("[proxy] Subdomain enumeration in proxy mode requires HTTP validation. Enabling alive checks.")
+		if !cfg.Quiet {
+			fmt.Println("[proxy] Subdomain enumeration in proxy mode requires HTTP validation. Enabling alive checks.")
+		}
 		cfg.CheckAlive = true
 	}
 
-	fmt.Printf("\n[*] Starting subdomain enumeration for: %s\n", domain)
-	fmt.Printf("%s\n", strings.Repeat("-", 50))
-	if proxyMode {
+	if !cfg.Quiet {
+		fmt.Printf("\n[*] Starting subdomain enumeration for: %s\n", domain)
+		fmt.Printf("%s\n", strings.Repeat("-", 50))
+	}
+	if proxyMode && !cfg.Quiet {
 		fmt.Printf("[proxy] Routing web validation via %s (direct DNS resolution disabled)\n", proxy.ActiveProxyDisplay())
 	}
 
@@ -220,27 +225,39 @@ func EnumerateSubdomains(domain string, cfg SubdomainConfig) ([]SubdomainResult,
 	// 1. Wordlist (file or built-in)
 	if cfg.WordlistFile != "" {
 		words, err := loadWordlist(cfg.WordlistFile)
-		if err != nil {
+		if err != nil && cfg.Quiet {
+			candidates = appendSubdomains(candidates, defaultSubdomainWords, domain)
+		} else if err != nil {
 			fmt.Printf("[!] Error loading wordlist: %v — using built-in list\n", err)
 			candidates = appendSubdomains(candidates, defaultSubdomainWords, domain)
 		} else {
 			candidates = appendSubdomains(candidates, words, domain)
-			fmt.Printf("[+] Loaded %d words from wordlist\n", len(words))
+			if !cfg.Quiet {
+				fmt.Printf("[+] Loaded %d words from wordlist\n", len(words))
+			}
 		}
 	} else {
 		candidates = appendSubdomains(candidates, defaultSubdomainWords, domain)
-		fmt.Printf("[+] Using built-in wordlist (%d words)\n", len(defaultSubdomainWords))
+		if !cfg.Quiet {
+			fmt.Printf("[+] Using built-in wordlist (%d words)\n", len(defaultSubdomainWords))
+		}
 	}
 
 	// 2. crt.sh passive recon
 	var crtshFound []string
 	if cfg.UseCrtSh {
-		fmt.Println("[*] Querying crt.sh certificate transparency logs...")
+		if !cfg.Quiet {
+			fmt.Println("[*] Querying crt.sh certificate transparency logs...")
+		}
 		crtSubs, err := queryCrtSh(domain, cfg.Timeout*2)
 		if err != nil {
-			fmt.Printf("[!] crt.sh error: %v\n", err)
+			if !cfg.Quiet {
+				fmt.Printf("[!] crt.sh error: %v\n", err)
+			}
 		} else {
-			fmt.Printf("[+] crt.sh returned %d subdomains\n", len(crtSubs))
+			if !cfg.Quiet {
+				fmt.Printf("[+] crt.sh returned %d subdomains\n", len(crtSubs))
+			}
 			crtshFound = crtSubs
 			for _, sub := range crtSubs {
 				if !contains(candidates, sub) {
@@ -253,7 +270,9 @@ func EnumerateSubdomains(domain string, cfg SubdomainConfig) ([]SubdomainResult,
 	// 3. Permutations from crt.sh results
 	if cfg.Permutate && len(crtshFound) > 0 {
 		perms := generatePermutations(crtshFound, domain)
-		fmt.Printf("[+] Generated %d permutation candidates\n", len(perms))
+		if !cfg.Quiet {
+			fmt.Printf("[+] Generated %d permutation candidates\n", len(perms))
+		}
 		for _, p := range perms {
 			if !contains(candidates, p) {
 				candidates = append(candidates, p)
@@ -261,7 +280,9 @@ func EnumerateSubdomains(domain string, cfg SubdomainConfig) ([]SubdomainResult,
 		}
 	}
 
-	fmt.Printf("[*] Total candidates to probe: %d\n\n", len(candidates))
+	if !cfg.Quiet {
+		fmt.Printf("[*] Total candidates to probe: %d\n\n", len(candidates))
+	}
 
 	// Resolve all candidates concurrently
 	var results []SubdomainResult
@@ -321,7 +342,9 @@ func EnumerateSubdomains(domain string, cfg SubdomainConfig) ([]SubdomainResult,
 			results = append(results, result)
 			mu.Unlock()
 
-			printSubdomainResult(result, cfg.CheckAlive)
+			if !cfg.Quiet {
+				printSubdomainResult(result, cfg.CheckAlive)
+			}
 		}(candidate)
 	}
 

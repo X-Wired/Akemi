@@ -59,13 +59,13 @@ graph TD
 
 ```bash
 # Basic connect scan
-./akemi-scanner --host 192.168.1.1 --ports 22,80,443 -v
+./Akemi-Spear --host 192.168.1.1 --ports 22,80,443 -v
 
 # High-speed SYN scan (requires root)
-sudo ./akemi-scanner --host 10.0.0.0/24 --ports 1-65535 --syn --rate 2000
+sudo ./Akemi-Spear --host 10.0.0.0/24 --ports 1-65535 --syn --rate 2000
 
 # Host discovery only (no port scan)
-./akemi-scanner --host 172.16.0.0/16 --no-port
+./Akemi-Spear --host 172.16.0.0/16 --no-port
 ```
 
 ### Options
@@ -99,7 +99,7 @@ Akemi-Spear is designed to be orchestrated. You can pipe a JSON request directly
 
 **Execution:**
 ```bash
-cat input.json | ./akemi-scanner --stdin
+cat input.json | ./Akemi-Spear --stdin
 ```
 
 ## 🏗️ Architecture

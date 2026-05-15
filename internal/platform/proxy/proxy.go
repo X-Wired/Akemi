@@ -20,6 +20,7 @@ import (
 type HTTPClientOptions struct {
 	InsecureTLS     bool
 	DisableRedirect bool
+	DefaultHeaders  map[string]string
 }
 
 var (
@@ -186,9 +187,17 @@ func CreateHTTPClientWithOptions(timeout int, opts HTTPClientOptions) *http.Clie
 		}
 	}
 
+	var rt http.RoundTripper = transport
+	if len(opts.DefaultHeaders) > 0 {
+		rt = &headerTransport{
+			base:    transport,
+			headers: opts.DefaultHeaders,
+		}
+	}
+
 	client := &http.Client{
 		Timeout:   clientTimeout,
-		Transport: transport,
+		Transport: rt,
 	}
 	if opts.DisableRedirect {
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -196,6 +205,21 @@ func CreateHTTPClientWithOptions(timeout int, opts HTTPClientOptions) *http.Clie
 		}
 	}
 	return client
+}
+
+// headerTransport injects default headers into every request.
+type headerTransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	for k, v := range t.headers {
+		if req.Header.Get(k) == "" {
+			req.Header.Set(k, v)
+		}
+	}
+	return t.base.RoundTrip(req)
 }
 
 func DialContextWithProxy(ctx context.Context, network string, address string) (net.Conn, error) {

@@ -1,6 +1,8 @@
 package recon
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -28,6 +30,9 @@ func newTestClient(responses map[string]testHTTPResponse) *http.Client {
 			if resp.contentType != "" {
 				headers.Set("Content-Type", resp.contentType)
 			}
+			for k, v := range resp.headers {
+				headers.Set(k, v)
+			}
 			return &http.Response{
 				StatusCode: resp.statusCode,
 				Status:     http.StatusText(resp.statusCode),
@@ -42,7 +47,17 @@ func newTestClient(responses map[string]testHTTPResponse) *http.Client {
 type testHTTPResponse struct {
 	statusCode  int
 	contentType string
+	headers     map[string]string
 	body        string
+}
+
+func disableCrawlRateDelay(t *testing.T) {
+	t.Helper()
+	previous := crawlRateDelay
+	crawlRateDelay = 0
+	t.Cleanup(func() {
+		crawlRateDelay = previous
+	})
 }
 
 func TestCollectSeedURLsIncludesRobotsAndSitemaps(t *testing.T) {
@@ -195,6 +210,94 @@ func TestCrawlDetailedPreservesHTTPStatuses(t *testing.T) {
 	}
 }
 
+func TestCrawlDetailedAppliesManagedURLLimitByDepth(t *testing.T) {
+	disableCrawlRateDelay(t)
+	var links strings.Builder
+	responses := map[string]testHTTPResponse{
+		"https://example.com/robots.txt":        {statusCode: http.StatusNotFound, body: "not found"},
+		"https://example.com/sitemap.xml":       {statusCode: http.StatusNotFound, body: "not found"},
+		"https://example.com/sitemap_index.xml": {statusCode: http.StatusNotFound, body: "not found"},
+	}
+	for i := 0; i < 1100; i++ {
+		path := fmt.Sprintf("/page-%04d", i)
+		links.WriteString(`<a href="` + path + `">page</a>`)
+		responses["https://example.com"+path] = testHTTPResponse{
+			contentType: "text/html",
+			body:        `<html><body>page</body></html>`,
+		}
+	}
+	responses["https://example.com/"] = testHTTPResponse{
+		contentType: "text/html",
+		body:        `<html><body>` + links.String() + `</body></html>`,
+	}
+
+	findings, err := crawlDetailedWithClientContext(context.Background(), "https://example.com", 1, newTestClient(responses))
+	if err != nil {
+		t.Fatalf("crawlDetailedWithClientContext returned error: %v", err)
+	}
+	if len(findings) != 1000 {
+		t.Fatalf("expected depth 1 crawl to stop at 1000 URLs, got %d", len(findings))
+	}
+}
+
+func TestCrawlDetailedDepthSevenRemovesURLLimit(t *testing.T) {
+	disableCrawlRateDelay(t)
+	var links strings.Builder
+	responses := map[string]testHTTPResponse{
+		"https://example.com/robots.txt":        {statusCode: http.StatusNotFound, body: "not found"},
+		"https://example.com/sitemap.xml":       {statusCode: http.StatusNotFound, body: "not found"},
+		"https://example.com/sitemap_index.xml": {statusCode: http.StatusNotFound, body: "not found"},
+	}
+	for i := 0; i < 1100; i++ {
+		path := fmt.Sprintf("/page-%04d", i)
+		links.WriteString(`<a href="` + path + `">page</a>`)
+		responses["https://example.com"+path] = testHTTPResponse{
+			contentType: "text/html",
+			body:        `<html><body>page</body></html>`,
+		}
+	}
+	responses["https://example.com/"] = testHTTPResponse{
+		contentType: "text/html",
+		body:        `<html><body>` + links.String() + `</body></html>`,
+	}
+
+	findings, err := crawlDetailedWithClientContext(context.Background(), "https://example.com", 7, newTestClient(responses))
+	if err != nil {
+		t.Fatalf("crawlDetailedWithClientContext returned error: %v", err)
+	}
+	if len(findings) <= 1000 {
+		t.Fatalf("expected depth 7 crawl to remove URL limit, got %d URLs", len(findings))
+	}
+}
+
+func TestCrawlDetailedStopsOnContextCancellation(t *testing.T) {
+	disableCrawlRateDelay(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	client := newTestClient(map[string]testHTTPResponse{
+		"https://example.com/": {
+			contentType: "text/html",
+			body:        `<html><body><a href="/next">next</a></body></html>`,
+		},
+		"https://example.com/next": {
+			contentType: "text/html",
+			body:        `<html><body>next</body></html>`,
+		},
+		"https://example.com/robots.txt":        {statusCode: http.StatusNotFound, body: "not found"},
+		"https://example.com/sitemap.xml":       {statusCode: http.StatusNotFound, body: "not found"},
+		"https://example.com/sitemap_index.xml": {statusCode: http.StatusNotFound, body: "not found"},
+	})
+
+	findings, err := crawlDetailedWithClientCallbackContext(ctx, "https://example.com", 2, client, func(CrawlFinding) {
+		cancel()
+	})
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected one fetched URL before cancellation, got %d: %#v", len(findings), findings)
+	}
+}
+
 func TestAnalyzeHTMLClientSurfaceFindsSecretsConfigAndAPISurface(t *testing.T) {
 	client := newTestClient(map[string]testHTTPResponse{
 		"https://example.com/assets/app.js": {
@@ -298,6 +401,87 @@ const cfg = "/config.js";
 	}
 }
 
+func TestHuntAPISurfaceSafeActiveEnrichesAuthParamsAndSpecCoverage(t *testing.T) {
+	client := newTestClient(map[string]testHTTPResponse{
+		"https://example.com/": {
+			contentType: "text/html",
+			body: `<html><head><script>
+fetch("/graphql");
+fetch("/api/v1/users?limit=10");
+</script></head></html>`,
+		},
+		"https://example.com/openapi.json": {
+			contentType: "application/json",
+			body: `{
+  "openapi": "3.0.0",
+  "info": {"title": "Hunter API", "version": "1.0.0"},
+  "paths": {
+    "/api/v1/users/{id}": {
+      "get": {
+        "parameters": [
+          {"name":"id","in":"path","required":true,"schema":{"type":"string"}},
+          {"name":"expand","in":"query","schema":{"type":"boolean"}}
+        ]
+      }
+    }
+  }
+}`,
+		},
+		"https://example.com/graphql": {
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":"query required"}`,
+		},
+		"https://example.com/api/v1/users": {
+			statusCode:  http.StatusUnauthorized,
+			contentType: "application/json",
+			headers:     map[string]string{"WWW-Authenticate": "Bearer"},
+			body:        `{"error":"auth required"}`,
+		},
+		"https://example.com/api/v1/users?limit=10": {
+			statusCode:  http.StatusUnauthorized,
+			contentType: "application/json",
+			headers:     map[string]string{"WWW-Authenticate": "Bearer"},
+			body:        `{"error":"auth required"}`,
+		},
+		"https://example.com/api/v1/users/%7Bid%7D": {
+			statusCode:  http.StatusOK,
+			contentType: "application/json",
+			body:        `{}`,
+		},
+	})
+
+	result, err := HuntAPISurface(APIHuntRequest{
+		StartURL:      "https://example.com/",
+		Mode:          "safe-active",
+		Wordlist:      []string{"/graphql", "/api/v1/users"},
+		MaxCandidates: 20,
+		Timeout:       5,
+	}, client)
+	if err != nil {
+		t.Fatalf("HuntAPISurface returned error: %v", err)
+	}
+	if !hasEndpoint(result.APIEndpoints, "https://example.com/graphql", "graphql", "") {
+		t.Fatalf("expected safe-active graphql endpoint, got %#v", result.APIEndpoints)
+	}
+	if !hasEndpointStatus(result.APIEndpoints, "https://example.com/api/v1/users?limit=10", http.StatusUnauthorized) {
+		t.Fatalf("expected auth-required API status, got %#v", result.APIEndpoints)
+	}
+	if !hasAuthRequired(result.APIEndpoints, "https://example.com/api/v1/users?limit=10") {
+		t.Fatalf("expected auth-required hint, got %#v", result.APIEndpoints)
+	}
+	if !hasAPIParameter(result.Parameters, "id", "path") ||
+		!hasAPIParameter(result.Parameters, "expand", "query") ||
+		!hasAPIParameter(result.Parameters, "limit", "query") {
+		t.Fatalf("expected path/query parameters, got %#v", result.Parameters)
+	}
+	if len(result.APISpecs) != 1 || result.APISpecs[0].CoveragePercent == 0 {
+		t.Fatalf("expected spec coverage, got %#v", result.APISpecs)
+	}
+	if result.Counts["api_endpoints"] == 0 || result.SourceSummary["openapi_spec"] == 0 {
+		t.Fatalf("expected counts and source summary, got %#v %#v", result.Counts, result.SourceSummary)
+	}
+}
+
 func hasEndpoint(endpoints []APIEndpointFinding, url string, apiType string, method string) bool {
 	for _, endpoint := range endpoints {
 		if endpoint.URL == url && endpoint.APIType == apiType && endpoint.Method == method {
@@ -310,6 +494,24 @@ func hasEndpoint(endpoints []APIEndpointFinding, url string, apiType string, met
 func hasEndpointStatus(endpoints []APIEndpointFinding, url string, statusCode int) bool {
 	for _, endpoint := range endpoints {
 		if endpoint.URL == url && endpoint.StatusCode == statusCode {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAuthRequired(endpoints []APIEndpointFinding, url string) bool {
+	for _, endpoint := range endpoints {
+		if endpoint.URL == url && endpoint.AuthRequired {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAPIParameter(params []APIParameterFinding, name string, in string) bool {
+	for _, param := range params {
+		if param.Name == name && param.In == in {
 			return true
 		}
 	}

@@ -18,7 +18,10 @@ use tokio::time::timeout;
 pub fn parse_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>, String> {
     let parts: Vec<&str> = cidr.split('/').collect();
     if parts.len() != 2 {
-        return Err(format!("Invalid CIDR notation: {} (expected IP/prefix)", cidr));
+        return Err(format!(
+            "Invalid CIDR notation: {} (expected IP/prefix)",
+            cidr
+        ));
     }
 
     let base_ip: Ipv4Addr = parts[0]
@@ -43,7 +46,11 @@ pub fn parse_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>, String> {
     let num_hosts: u64 = 1u64 << host_bits;
 
     // Apply network mask to get the network address
-    let mask = if prefix == 0 { 0u32 } else { !0u32 << host_bits };
+    let mask = if prefix == 0 {
+        0u32
+    } else {
+        !0u32 << host_bits
+    };
     let network = base_u32 & mask;
 
     let mut ips = Vec::new();
@@ -80,10 +87,7 @@ pub async fn run_host_discovery(
     let start = Instant::now();
     let total = ips.len() as u32;
 
-    eprintln!(
-        "[*] Host discovery: {} hosts, {} threads",
-        total, threads
-    );
+    eprintln!("[*] Host discovery: {} hosts, {} threads", total, threads);
 
     let alive_hosts: Arc<Mutex<Vec<AliveHost>>> = Arc::new(Mutex::new(Vec::new()));
     let scanned_count = Arc::new(AtomicU32::new(0));
@@ -269,63 +273,12 @@ async fn ping_fallback(ip: &str) -> bool {
     }
 }
 
-/// Perform reverse DNS lookup for an IP address.
+/// Perform reverse DNS lookup for an IP address using system getnameinfo.
 fn reverse_dns(ip: &str) -> Option<String> {
-    use std::net::ToSocketAddrs;
-    let addr = format!("{}:0", ip);
-    // Try to do a reverse lookup via the system resolver
-    if let Ok(mut addrs) = addr.to_socket_addrs() {
-        if let Some(_) = addrs.next() {
-            // Unfortunately std doesn't expose PTR lookup directly.
-            // We use a manual approach: try to lookup the IP as a hostname.
-            // This won't work for PTR in std. Use dns-lookup crate approach instead.
-        }
-    }
-
-    // Manual PTR via std — construct in-addr.arpa query
-    // Since we can't do PTR with std alone, try getnameinfo equivalent
     use std::net::IpAddr;
-    if let Ok(ip_addr) = ip.parse::<IpAddr>() {
-        // Use the underlying OS resolver for reverse DNS
-        match dns_reverse_lookup(ip_addr) {
-            Some(name) if name != ip => Some(name),
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
-
-/// OS-level reverse DNS lookup using gethostbyaddr equivalent.
-fn dns_reverse_lookup(ip: std::net::IpAddr) -> Option<String> {
-    use std::net::SocketAddr;
-    // Create a socket addr and use the system's name resolution
-    let _socket_addr = SocketAddr::new(ip, 0);
-    
-    // Use std::net name lookup — on most systems this calls getnameinfo
-    // Unfortunately Rust's std doesn't have a direct reverse DNS API.
-    // We'll attempt a workaround: the hostname crate or manual lookup.
-    
-    // Fallback: try to connect and check — or just return None for now
-    // and let the DNS-lookup crate handle it if available.
-    
-    // Simple approach: use the system DNS by trying to resolve the reverse
-    // We'll construct the PTR name manually and try resolution
-    match ip {
-        std::net::IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            let ptr_name = format!(
-                "{}.{}.{}.{}.in-addr.arpa",
-                octets[3], octets[2], octets[1], octets[0]
-            );
-            // Try resolving the PTR name
-            use std::net::ToSocketAddrs;
-            // This won't actually do PTR lookup via std, but let's try
-            match format!("{}:0", ptr_name).to_socket_addrs() {
-                Ok(mut addrs) => addrs.next().map(|a| a.ip().to_string()),
-                Err(_) => None,
-            }
-        }
+    let ip_addr: IpAddr = ip.parse().ok()?;
+    match dns_lookup::lookup_addr(&ip_addr) {
+        Ok(hostname) if hostname != ip => Some(hostname),
         _ => None,
     }
 }

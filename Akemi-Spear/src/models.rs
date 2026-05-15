@@ -1,4 +1,4 @@
-// models.rs — JSON contract between Go (Akemi) and Rust (akemi-scanner)
+// models.rs — JSON contract between Go (Akemi) and Rust (Akemi-Spear)
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -80,6 +80,9 @@ pub struct PortResult {
     pub banner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub technology: Vec<String>,
+    /// Structured technology matches with confidence scoring
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tech_matches: Vec<TechMatch>,
     /// Detected service name (e.g. "http", "ssh", "mysql")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -89,6 +92,19 @@ pub struct PortResult {
     pub tls: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_cn: Option<String>,
+}
+
+/// Structured technology detection match with confidence scoring.
+#[derive(Debug, Clone, Serialize)]
+pub struct TechMatch {
+    pub name: String,
+    pub category: String,
+    pub confidence: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub evidence: String,
+    /// Detection source: "builtin", "yaml-probe", or "http-header"
+    pub source: String,
 }
 
 // =====================================================
@@ -138,8 +154,10 @@ pub struct ProbeInfo {
     #[serde(default)]
     pub severity: String,
     #[serde(default)]
+    #[allow(dead_code)] // Reserved for future report enrichment
     pub description: String,
     #[serde(default)]
+    #[allow(dead_code)] // Reserved for future tag-based filtering
     pub tags: Vec<String>,
 }
 
@@ -163,16 +181,4 @@ pub struct ScanState {
     pub scanned_ports: Vec<u16>,
     pub open_ports: Vec<u16>,
     pub timestamp: String,
-}
-
-// =====================================================
-// Progress line (written to stderr)
-// =====================================================
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ProgressLine {
-    pub scanned: u32,
-    pub total: u32,
-    pub open: u32,
-    pub rate_pps: f64,
 }

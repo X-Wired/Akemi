@@ -1,0 +1,277 @@
+name: Akemi CI
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - develop
+      - "feature/**"
+      - "fix/**"
+      - "release/**"
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - master
+      - main
+      - develop
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.24.0"
+  RUST_VERSION: "1.85.0"
+  AKEMI_SPEAR_BIN: "Akemi-Spear"
+  DOTHOUND_BIN: "dothound"
+
+jobs:
+  release-assumptions:
+    name: Release Assumptions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate toolchain, binary, and transport assumptions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          go_mod_version="$(awk '$1 == "go" { print $2 }' go.mod)"
+          test "$go_mod_version" = "$GO_VERSION"
+
+          spear_package="$(awk -F '"' '/^name = / { print $2; exit }' Akemi-Spear/Cargo.toml)"
+          test "$spear_package" = "$AKEMI_SPEAR_BIN"
+
+          dothound_bin="$(awk -F '"' '/^\[\[bin\]\]/ { in_bin=1; next } in_bin && /^name = / { print $2; exit }' DotHound/Cargo.toml)"
+          test "$dothound_bin" = "$DOTHOUND_BIN"
+
+          dothound_edition="$(awk -F '"' '/^edition = / { print $2; exit }' DotHound/Cargo.toml)"
+          test "$dothound_edition" = "2024"
+
+          required_rust="1.85.0"
+          first="$(printf '%s\n%s\n' "$required_rust" "$RUST_VERSION" | sort -V | head -n1)"
+          if [ "$first" != "$required_rust" ]; then
+            echo "Rust $RUST_VERSION is too old for DotHound edition 2024; need >= $required_rust"
+            exit 1
+          fi
+
+          if grep -R --line-number -E '\bsse\b' Dockerfile docker-compose.yml; then
+            echo "Legacy SSE transport is not supported by Akemi serve; use http or stdio."
+            exit 1
+          fi
+
+          AKEMI_MCP_SERVER_API_KEY=ci-secret docker compose --profile server config >/dev/null
+
+  go-lint-test:
+    name: Go - Lint & Test
+    runs-on: ubuntu-latest
+    needs: release-assumptions
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m --verbose
+          skip-cache: false
+
+      - name: Run Go tests
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: coverage.out
+
+  go-build:
+    name: Go - Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: release-assumptions
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: akemi
+          - os: windows-latest
+            binary: akemi.exe
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build Akemi
+        run: go build -v -trimpath -o "bin/${{ matrix.binary }}" ./cmd/Akemi
+        env:
+          CGO_ENABLED: 0
+
+      - name: Verify Akemi CLI
+        run: |
+          "./bin/${{ matrix.binary }}" --version
+          "./bin/${{ matrix.binary }}" serve --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: akemi-${{ matrix.os }}
+          path: bin/
+
+  rust-spear:
+    name: Rust - Akemi-Spear (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: release-assumptions
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            exe_suffix: ""
+          - os: windows-latest
+            exe_suffix: ".exe"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          cache: true
+
+      - name: Test Akemi-Spear
+        working-directory: Akemi-Spear
+        run: cargo test --locked
+
+      - name: Build Akemi-Spear
+        working-directory: Akemi-Spear
+        run: cargo build --release --locked
+
+      - name: Verify Akemi-Spear binary
+        working-directory: Akemi-Spear
+        run: '"./target/release/${{ env.AKEMI_SPEAR_BIN }}${{ matrix.exe_suffix }}" --version'
+
+  rust-dothound:
+    name: Rust - DotHound (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: release-assumptions
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            exe_suffix: ""
+          - os: windows-latest
+            exe_suffix: ".exe"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          cache: true
+
+      - name: Test DotHound
+        working-directory: DotHound
+        run: cargo test --locked
+
+      - name: Build DotHound
+        working-directory: DotHound
+        run: cargo build --release --locked
+
+      - name: Verify DotHound binary
+        working-directory: DotHound
+        run: '"./target/release/${{ env.DOTHOUND_BIN }}${{ matrix.exe_suffix }}" --version'
+
+  docker-build:
+    name: Docker - Build & Smoke
+    runs-on: ubuntu-latest
+    needs: release-assumptions
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --build-arg GO_VERSION=1.24 --build-arg RUST_VERSION=1.85 -t akemi:ci .
+
+      - name: Verify packaged binaries
+        run: |
+          docker run --rm akemi:ci --version
+          docker run --rm akemi:ci Akemi-Spear --version
+          docker run --rm akemi:ci dothound --version
+
+      - name: Verify HTTP transport
+        run: |
+          set -euo pipefail
+          cid="$(docker run -d --rm -p 127.0.0.1:9090:9090 akemi:ci serve --transport http --host 0.0.0.0 --port 9090 --api-key ci-secret --probe-dir /etc/akemi/probes)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:9090/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$cid"
+          exit 1
+
+  security-scan:
+    name: Security - Dependency Scan
+    runs-on: ubuntu-latest
+    needs: release-assumptions
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Go vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Rust dependency audit
+        run: |
+          cargo install cargo-audit --locked
+          (cd Akemi-Spear && cargo audit)
+          (cd DotHound && cargo audit)
+
+  all-checks:
+    name: All Checks
+    needs:
+      - release-assumptions
+      - go-lint-test
+      - go-build
+      - rust-spear
+      - rust-dothound
+      - docker-build
+      - security-scan
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Verify all required jobs
+        run: |
+          set -euo pipefail
+          echo '${{ toJson(needs) }}' | jq .
+          failed="$(echo '${{ toJson(needs) }}' | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key): \(.value.result)"')"
+          if [ -n "$failed" ]; then
+            echo "Required jobs did not pass:"
+            echo "$failed"
+            exit 1
+          fi
+          echo "All required jobs passed."

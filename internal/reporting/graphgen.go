@@ -201,15 +201,25 @@ func BuildGraph(report *ScanReport) *ScanGraph {
 	for _, endpoint := range report.APIEndpoints {
 		endpointID := nodeID("api_endpoint", endpoint.URL+"|"+endpoint.Method+"|"+endpoint.APIType)
 		meta := map[string]string{
-			"api_type": endpoint.APIType,
-			"method":   endpoint.Method,
-			"version":  endpoint.Version,
+			"api_type":     endpoint.APIType,
+			"method":       endpoint.Method,
+			"version":      endpoint.Version,
+			"content_type": endpoint.ContentType,
 		}
 		if endpoint.Status != "" {
 			meta["status"] = endpoint.Status
 		}
 		if endpoint.StatusCode > 0 {
 			meta["status_code"] = fmt.Sprintf("%d", endpoint.StatusCode)
+		}
+		if endpoint.AuthRequired {
+			meta["auth_required"] = "true"
+		}
+		if endpoint.Confidence > 0 {
+			meta["confidence"] = fmt.Sprintf("%.2f", endpoint.Confidence)
+		}
+		if len(endpoint.Parameters) > 0 {
+			meta["parameters"] = fmt.Sprintf("%d", len(endpoint.Parameters))
 		}
 		addNode(GraphNode{
 			ID:    endpointID,
@@ -223,15 +233,25 @@ func BuildGraph(report *ScanReport) *ScanGraph {
 		for _, endpoint := range report.JSAnalysis.APIEndpoints {
 			endpointID := nodeID("api_endpoint", endpoint.URL+"|"+endpoint.Method+"|"+endpoint.APIType)
 			meta := map[string]string{
-				"api_type": endpoint.APIType,
-				"method":   endpoint.Method,
-				"version":  endpoint.Version,
+				"api_type":     endpoint.APIType,
+				"method":       endpoint.Method,
+				"version":      endpoint.Version,
+				"content_type": endpoint.ContentType,
 			}
 			if endpoint.Status != "" {
 				meta["status"] = endpoint.Status
 			}
 			if endpoint.StatusCode > 0 {
 				meta["status_code"] = fmt.Sprintf("%d", endpoint.StatusCode)
+			}
+			if endpoint.AuthRequired {
+				meta["auth_required"] = "true"
+			}
+			if endpoint.Confidence > 0 {
+				meta["confidence"] = fmt.Sprintf("%.2f", endpoint.Confidence)
+			}
+			if len(endpoint.Parameters) > 0 {
+				meta["parameters"] = fmt.Sprintf("%d", len(endpoint.Parameters))
 			}
 			addNode(GraphNode{
 				ID:    endpointID,
@@ -246,16 +266,20 @@ func BuildGraph(report *ScanReport) *ScanGraph {
 	for _, spec := range report.APISpecs {
 		specID := nodeID("api_spec", spec.URL)
 		meta := map[string]string{
-			"api_type": spec.APIType,
-			"format":   spec.Format,
-			"version":  spec.Version,
-			"title":    spec.Title,
+			"api_type":     spec.APIType,
+			"format":       spec.Format,
+			"version":      spec.Version,
+			"title":        spec.Title,
+			"content_type": spec.ContentType,
 		}
 		if spec.Status != "" {
 			meta["status"] = spec.Status
 		}
 		if spec.StatusCode > 0 {
 			meta["status_code"] = fmt.Sprintf("%d", spec.StatusCode)
+		}
+		if spec.CoveragePercent > 0 {
+			meta["coverage_percent"] = fmt.Sprintf("%.0f", spec.CoveragePercent)
 		}
 		addNode(GraphNode{
 			ID:    specID,
@@ -269,16 +293,20 @@ func BuildGraph(report *ScanReport) *ScanGraph {
 		for _, spec := range report.JSAnalysis.APISpecs {
 			specID := nodeID("api_spec", spec.URL)
 			meta := map[string]string{
-				"api_type": spec.APIType,
-				"format":   spec.Format,
-				"version":  spec.Version,
-				"title":    spec.Title,
+				"api_type":     spec.APIType,
+				"format":       spec.Format,
+				"version":      spec.Version,
+				"title":        spec.Title,
+				"content_type": spec.ContentType,
 			}
 			if spec.Status != "" {
 				meta["status"] = spec.Status
 			}
 			if spec.StatusCode > 0 {
 				meta["status_code"] = fmt.Sprintf("%d", spec.StatusCode)
+			}
+			if spec.CoveragePercent > 0 {
+				meta["coverage_percent"] = fmt.Sprintf("%.0f", spec.CoveragePercent)
 			}
 			addNode(GraphNode{
 				ID:    specID,

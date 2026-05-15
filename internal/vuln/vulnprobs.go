@@ -107,6 +107,7 @@ type ProbeConfig struct {
 	TemplateTags []string // Filter templates by tags (e.g. ["sqli", "high"])
 	TemplateIDs  []string // Run specific templates by ID
 	UseTemplates bool     // If true, use YAML templates; if false, use legacy hardcoded probes
+	Quiet        bool     // Suppress terminal progress output when embedded in TUI/service flows
 }
 
 // --- SQLi Detection ---
@@ -406,7 +407,9 @@ func ProbeParamsWithCandidates(rawURL string, candidateParams []string, cfg Prob
 			}
 		}
 
-		fmt.Printf("[*] Loaded %d probe template(s)\n", len(templates))
+		if !cfg.Quiet {
+			fmt.Printf("[*] Loaded %d probe template(s)\n", len(templates))
+		}
 		return ExecuteAllTemplates(templates, rawURL, candidateParams, cfg)
 	}
 
@@ -436,9 +439,11 @@ func legacyProbeParams(rawURL string, candidateParams []string, cfg ProbeConfig)
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, cfg.Threads)
 
-	fmt.Printf("\n[*] Probing %d parameter(s) on %s (legacy mode)\n", len(paramNames), baseURL)
-	fmt.Printf("[*] Tests: SQLi | SSRF | Open Redirect | XSS\n")
-	fmt.Printf("%s\n", strings.Repeat("-", 50))
+	if !cfg.Quiet {
+		fmt.Printf("\n[*] Probing %d parameter(s) on %s (legacy mode)\n", len(paramNames), baseURL)
+		fmt.Printf("[*] Tests: SQLi | SSRF | Open Redirect | XSS\n")
+		fmt.Printf("%s\n", strings.Repeat("-", 50))
+	}
 
 	for _, param := range paramNames {
 		wg.Add(1)
@@ -447,14 +452,18 @@ func legacyProbeParams(rawURL string, candidateParams []string, cfg ProbeConfig)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			fmt.Printf("[~] Testing param: %s\n", p)
+			if !cfg.Quiet {
+				fmt.Printf("[~] Testing param: %s\n", p)
+			}
 
 			// SQLi
 			if finding := probeSQLi(client, baseURL, p, queryParams); finding != nil {
 				mu.Lock()
 				findings = append(findings, *finding)
 				mu.Unlock()
-				printFinding(*finding)
+				if !cfg.Quiet {
+					printFinding(*finding)
+				}
 			}
 
 			// SSRF
@@ -462,7 +471,9 @@ func legacyProbeParams(rawURL string, candidateParams []string, cfg ProbeConfig)
 				mu.Lock()
 				findings = append(findings, *finding)
 				mu.Unlock()
-				printFinding(*finding)
+				if !cfg.Quiet {
+					printFinding(*finding)
+				}
 			}
 
 			// Open Redirect
@@ -470,7 +481,9 @@ func legacyProbeParams(rawURL string, candidateParams []string, cfg ProbeConfig)
 				mu.Lock()
 				findings = append(findings, *finding)
 				mu.Unlock()
-				printFinding(*finding)
+				if !cfg.Quiet {
+					printFinding(*finding)
+				}
 			}
 
 			// XSS
@@ -478,7 +491,9 @@ func legacyProbeParams(rawURL string, candidateParams []string, cfg ProbeConfig)
 				mu.Lock()
 				findings = append(findings, *finding)
 				mu.Unlock()
-				printFinding(*finding)
+				if !cfg.Quiet {
+					printFinding(*finding)
+				}
 			}
 
 		}(param)

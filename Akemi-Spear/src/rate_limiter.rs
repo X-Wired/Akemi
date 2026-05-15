@@ -1,5 +1,9 @@
 // rate_limiter.rs — Token-bucket rate limiter wrapping `governor`
-use governor::{Quota, RateLimiter as GovLimiter, clock::DefaultClock, state::{InMemoryState, NotKeyed}};
+use governor::{
+    clock::DefaultClock,
+    state::{InMemoryState, NotKeyed},
+    Quota, RateLimiter as GovLimiter,
+};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -26,8 +30,7 @@ impl RateLimiter {
         // Use burst = max(threads, cps) so the initial wave fills all threads
         let burst = cps.max(threads).max(1);
         let burst_nz = NonZeroU32::new(burst).unwrap();
-        let quota = Quota::per_second(NonZeroU32::new(cps).unwrap())
-            .allow_burst(burst_nz);
+        let quota = Quota::per_second(NonZeroU32::new(cps).unwrap()).allow_burst(burst_nz);
         let limiter = GovLimiter::direct(quota);
 
         RateLimiter {
@@ -40,11 +43,6 @@ impl RateLimiter {
         if let Some(ref limiter) = self.limiter {
             limiter.until_ready().await;
         }
-    }
-
-    /// Get a clone-friendly Arc reference to this limiter's inner.
-    pub fn clone_inner(&self) -> Option<Arc<GovLimiter<NotKeyed, InMemoryState, DefaultClock>>> {
-        self.limiter.clone()
     }
 }
 

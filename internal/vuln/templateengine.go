@@ -221,12 +221,14 @@ func ExecuteAllTemplates(
 	if len(paramNames) > 0 {
 		totalProbes *= len(paramNames)
 	}
-	fmt.Printf("\n[*] Running %d template(s) against %s\n", len(templates), baseURL)
-	if len(paramNames) > 0 {
-		fmt.Printf("[*] Testing %d parameter(s) × %d template(s) = %d probe(s)\n",
-			len(paramNames), len(templates), totalProbes)
+	if !cfg.Quiet {
+		fmt.Printf("\n[*] Running %d template(s) against %s\n", len(templates), baseURL)
+		if len(paramNames) > 0 {
+			fmt.Printf("[*] Testing %d parameter(s) × %d template(s) = %d probe(s)\n",
+				len(paramNames), len(templates), totalProbes)
+		}
+		fmt.Printf("%s\n", strings.Repeat("-", 55))
 	}
-	fmt.Printf("%s\n", strings.Repeat("-", 55))
 
 	for _, tmpl := range templates {
 		tmpl := tmpl // capture
@@ -234,6 +236,9 @@ func ExecuteAllTemplates(
 		switch tmpl.Inject {
 		case "query_params":
 			// Test each query parameter with this template
+			if len(paramNames) == 0 && cfg.Quiet {
+				continue
+			}
 			if len(paramNames) == 0 {
 				fmt.Printf("[!] Template %s requires query_params but URL has none — skipping\n", tmpl.ID)
 				continue
@@ -250,8 +255,10 @@ func ExecuteAllTemplates(
 						mu.Lock()
 						findings = append(findings, results...)
 						mu.Unlock()
-						for _, f := range results {
-							printFinding(f)
+						if !cfg.Quiet {
+							for _, f := range results {
+								printFinding(f)
+							}
 						}
 					}
 				}(param, tmpl)
@@ -270,8 +277,10 @@ func ExecuteAllTemplates(
 					mu.Lock()
 					findings = append(findings, results...)
 					mu.Unlock()
-					for _, f := range results {
-						printFinding(f)
+					if !cfg.Quiet {
+						for _, f := range results {
+							printFinding(f)
+						}
 					}
 				}
 			}(tmpl)
@@ -289,8 +298,10 @@ func ExecuteAllTemplates(
 					mu.Lock()
 					findings = append(findings, results...)
 					mu.Unlock()
-					for _, f := range results {
-						printFinding(f)
+					if !cfg.Quiet {
+						for _, f := range results {
+							printFinding(f)
+						}
 					}
 				}
 			}(tmpl)
@@ -308,8 +319,10 @@ func ExecuteAllTemplates(
 					mu.Lock()
 					findings = append(findings, results...)
 					mu.Unlock()
-					for _, f := range results {
-						printFinding(f)
+					if !cfg.Quiet {
+						for _, f := range results {
+							printFinding(f)
+						}
 					}
 				}
 			}(tmpl)
@@ -331,8 +344,10 @@ func ExecuteAllTemplates(
 						mu.Lock()
 						findings = append(findings, results...)
 						mu.Unlock()
-						for _, f := range results {
-							printFinding(f)
+						if !cfg.Quiet {
+							for _, f := range results {
+								printFinding(f)
+							}
 						}
 					}
 				}(param, tmpl)

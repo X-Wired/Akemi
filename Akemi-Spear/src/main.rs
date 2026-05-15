@@ -1,4 +1,4 @@
-// main.rs — Entry point for akemi-scanner
+// main.rs — Entry point for Akemi-Spear
 //
 // Three modes:
 //   1. Stdin mode (default): reads ScanRequest JSON from stdin, writes ScanResult to stdout
@@ -22,7 +22,7 @@ use std::io::{self, Read};
 
 /// Akemi Scanner — High-performance port scanning & network reconnaissance engine
 #[derive(Parser, Debug)]
-#[command(name = "akemi-scanner")]
+#[command(name = "Akemi-Spear")]
 #[command(about = "High-performance port scanner and network reconnaissance engine for Akemi")]
 #[command(version = "0.2.0")]
 struct Cli {
@@ -90,7 +90,12 @@ async fn main() {
     let cli = Cli::parse();
 
     // Check if this is a host discovery request (CIDR or --no-port)
-    if cli.no_port || cli.host.as_ref().map_or(false, |h| host_discovery::is_cidr(h)) {
+    if cli.no_port
+        || cli
+            .host
+            .as_ref()
+            .map_or(false, |h| host_discovery::is_cidr(h))
+    {
         run_discovery_mode(&cli).await;
         return;
     }
@@ -128,7 +133,10 @@ async fn main() {
         // Print header to stderr
         eprintln!();
         eprintln!("    ╔══════════════════════════════════════╗");
-        eprintln!("    ║   akemi-scanner v0.2.0  (Rust)       ║");
+        eprintln!(
+            "    ║   Akemi-Spear v{}  (Rust)         ║",
+            env!("CARGO_PKG_VERSION")
+        );
         eprintln!("    ║   Network Reconnaissance Engine       ║");
         eprintln!("    ╚══════════════════════════════════════╝");
         eprintln!();
@@ -142,15 +150,13 @@ async fn main() {
     };
 
     match result {
-        Ok(scan_result) => {
-            match serde_json::to_string_pretty(&scan_result) {
-                Ok(json) => println!("{}", json),
-                Err(e) => {
-                    eprintln!("[!] Error serializing result: {}", e);
-                    std::process::exit(1);
-                }
+        Ok(scan_result) => match serde_json::to_string_pretty(&scan_result) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                eprintln!("[!] Error serializing result: {}", e);
+                std::process::exit(1);
             }
-        }
+        },
         Err(e) => {
             eprintln!("[!] Scan error: {}", e);
             std::process::exit(1);
@@ -171,7 +177,10 @@ async fn run_discovery_mode(cli: &Cli) {
     if cli.verbose {
         eprintln!();
         eprintln!("    ╔══════════════════════════════════════╗");
-        eprintln!("    ║   akemi-scanner v0.2.0  (Rust)       ║");
+        eprintln!(
+            "    ║   Akemi-Spear v{}  (Rust)         ║",
+            env!("CARGO_PKG_VERSION")
+        );
         eprintln!("    ║   Host Discovery Mode                 ║");
         eprintln!("    ╚══════════════════════════════════════╝");
         eprintln!();
@@ -190,7 +199,9 @@ async fn run_discovery_mode(cli: &Cli) {
         match host.parse::<std::net::Ipv4Addr>() {
             Ok(ip) => vec![ip],
             Err(_) => {
-                eprintln!("[!] For discovery mode, provide an IP or CIDR range (e.g. 192.168.1.0/24)");
+                eprintln!(
+                    "[!] For discovery mode, provide an IP or CIDR range (e.g. 192.168.1.0/24)"
+                );
                 std::process::exit(1);
             }
         }

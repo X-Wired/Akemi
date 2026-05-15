@@ -3,6 +3,7 @@ package app
 import (
 	ui "Akemi/internal/cli/ui"
 	core "Akemi/internal/core"
+	"Akemi/internal/dothound"
 	exploit "Akemi/internal/exploit"
 	"Akemi/internal/fuzz"
 	proxy "Akemi/internal/platform/proxy"
@@ -29,6 +30,10 @@ type SubdomainConfig = recon.SubdomainConfig
 type ProbeConfig = vuln.ProbeConfig
 type PortScanner = recon.PortScanner
 type FuzzConfig = core.FuzzConfig
+type AuthSession = dothound.AuthSession
+type StdinOptions = dothound.StdinOptions
+type WorkflowGraph = dothound.WorkflowGraph
+type DaemonProxy = dothound.DaemonProxy
 
 const Top1000Ports = recon.Top1000Ports
 
@@ -92,3 +97,26 @@ func RunFuzzer(cfg core.FuzzConfig) ([]core.FuzzResult, time.Duration, error) {
 	return fuzz.RunFuzzer(cfg)
 }
 func CreateHTTPClient(timeout int) *http.Client { return core.CreateHTTPClient(timeout) }
+
+// DotHound integration
+func CaptureLogin(targetURL, username, password string) (*dothound.AuthSession, error) {
+	return dothound.CaptureLogin(targetURL, username, password)
+}
+func CaptureLoginWithOptions(targetURL, username, password string, opts dothound.StdinOptions) (*dothound.AuthSession, error) {
+	return dothound.CaptureLoginWithOptions(targetURL, username, password, opts)
+}
+func LoadWorkflowGraph(path string) (*dothound.WorkflowGraph, error) {
+	return dothound.LoadWorkflowGraph(path)
+}
+func CreateAuthenticatedHTTPClient(timeout int, cookies []string) *http.Client {
+	return core.CreateHTTPClientWithCookies(timeout, cookies)
+}
+func SetDefaultCookies(cookies []string) { core.SetDefaultCookies(cookies) }
+func ClearDefaultCookies()               { core.ClearDefaultCookies() }
+func GetDefaultCookies() []string        { return core.GetDefaultCookies() }
+
+// DotHound daemon mode
+func StartDaemonProxy() (string, string, error) { return dothound.StartDaemonProxy() }
+func StartDaemonProxyBackground() (*dothound.DaemonProxy, error) {
+	return dothound.StartDaemonProxyBackground()
+}

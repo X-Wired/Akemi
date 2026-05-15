@@ -41,11 +41,13 @@ type ScanReport struct {
 	SecretFindings  []SecretFinding            `json:"secret_findings,omitempty"`
 	APIEndpoints    []APIEndpointFinding       `json:"api_endpoints,omitempty"`
 	APISpecs        []APISpecFinding           `json:"api_specs,omitempty"`
+	APIParameters   []APIParameterFinding      `json:"api_parameters,omitempty"`
 	Subdomains      []SubdomainResult          `json:"subdomains,omitempty"`
 	VulnFindings    []VulnFinding              `json:"vuln_findings,omitempty"`
 	FuzzResults     []FuzzResult               `json:"fuzz_results,omitempty"`
 	KeywordMatches  map[string][]string        `json:"keyword_matches,omitempty"`
 	ExploitMatches  []ExploitDBEntry           `json:"exploit_matches,omitempty"`
+	AuthWorkflow    *AuthSession               `json:"auth_workflow,omitempty"`
 }
 
 // ReportSummary is a computed summary for the HTML report header.
@@ -183,6 +185,8 @@ func (r *ScanReport) WriteHTML(w io.Writer, graph *ScanGraph) error {
 			case []APIEndpointFinding:
 				return len(val)
 			case []APISpecFinding:
+				return len(val)
+			case []APIParameterFinding:
 				return len(val)
 			case map[string]RichParamDetail:
 				return len(val)
@@ -373,6 +377,35 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
   {{end}}
 </div>
 
+<!-- AUTH WORKFLOW (DotHound) -->
+{{if .Report.AuthWorkflow}}
+<div class="section">
+  <div class="section-header" onclick="toggle(this)">
+    <span>🔐 Auth Capture (DotHound)</span>
+    <span class="count">{{if .Report.AuthWorkflow.AuthSuccess}}✓ success{{else}}✗ failed{{end}}</span>
+  </div>
+  <div class="section-body">
+    <p><strong>Target:</strong> {{.Report.AuthWorkflow.TargetURL}}</p>
+    <p><strong>Status:</strong> {{if .Report.AuthWorkflow.AuthSuccess}}Authenticated successfully{{else}}Authentication failed or incomplete{{end}}</p>
+    <p><strong>Session Cookies:</strong> {{len .Report.AuthWorkflow.Cookies}} captured</p>
+    {{if .Report.AuthWorkflow.CSRFTokens}}
+    <p><strong>CSRF Tokens:</strong> {{len .Report.AuthWorkflow.CSRFTokens}} extracted</p>
+    <ul class="url-list">{{range .Report.AuthWorkflow.CSRFTokens}}<li class="mono">{{.}}</li>{{end}}</ul>
+    {{end}}
+    {{if .Report.AuthWorkflow.RedirectChain}}
+    <p><strong>Redirect Chain ({{len .Report.AuthWorkflow.RedirectChain}} hops):</strong></p>
+    <ul class="url-list">{{range .Report.AuthWorkflow.RedirectChain}}<li class="mono">{{.}}</li>{{end}}</ul>
+    {{end}}
+    {{if .Report.AuthWorkflow.WorkflowPath}}
+    <p><strong>Workflow JSON:</strong> <code>{{.Report.AuthWorkflow.WorkflowPath}}</code></p>
+    {{end}}
+    {{if .Report.AuthWorkflow.HTMLReportPath}}
+    <p><strong>Workflow HTML Report:</strong> <code>{{.Report.AuthWorkflow.HTMLReportPath}}</code></p>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
 <!-- VULNERABILITIES -->
 {{if .Report.VulnFindings}}
 <div class="section">
@@ -525,7 +558,7 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
     {{if .Report.APISpecs}}
     <h3>Specs ({{len .Report.APISpecs}})</h3>
     <table>
-      <tr><th>Type</th><th>Status</th><th>URL</th><th>Format</th><th>Version</th><th>Endpoints</th></tr>
+      <tr><th>Type</th><th>Status</th><th>URL</th><th>Format</th><th>Version</th><th>Endpoints</th><th>Coverage</th></tr>
       {{range .Report.APISpecs}}
       <tr>
         <td><span class="tag">{{.APIType}}</span></td>
@@ -534,6 +567,7 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
         <td><span class="tag">{{.Format}}</span></td>
         <td class="mono">{{.Version}}</td>
         <td>{{.EndpointCount}}</td>
+        <td>{{if gt .CoveragePercent 0.0}}{{printf "%.0f%%" .CoveragePercent}}{{else}}-{{end}}</td>
       </tr>
       {{end}}
     </table>
@@ -542,7 +576,7 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
     {{if .Report.APIEndpoints}}
     <h3>Endpoints ({{len .Report.APIEndpoints}})</h3>
     <table>
-      <tr><th>Type</th><th>Status</th><th>Method</th><th>URL</th><th>Version</th><th>Sources</th></tr>
+      <tr><th>Type</th><th>Status</th><th>Method</th><th>URL</th><th>Version</th><th>Auth</th><th>Confidence</th><th>Params</th><th>Sources</th></tr>
       {{range .Report.APIEndpoints}}
       <tr>
         <td><span class="tag">{{.APIType}}</span></td>
@@ -550,6 +584,9 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
         <td><span class="tag">{{if .Method}}{{.Method}}{{else}}ANY{{end}}</span></td>
         <td class="mono">{{.URL}}</td>
         <td class="mono">{{.Version}}</td>
+        <td>{{if .AuthRequired}}<span class="severity-medium">required</span>{{else}}<span class="tag">unknown</span>{{end}}</td>
+        <td>{{if gt .Confidence 0.0}}{{printf "%.2f" .Confidence}}{{else}}-{{end}}</td>
+        <td>{{len .Parameters}}</td>
         <td class="mono">{{join .SourceURLs ", "}}</td>
       </tr>
       {{end}}
@@ -567,7 +604,7 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
     {{if .Report.JSAnalysis.APISpecs}}
     <h3>Specs ({{len .Report.JSAnalysis.APISpecs}})</h3>
     <table>
-      <tr><th>Type</th><th>Status</th><th>URL</th><th>Format</th><th>Version</th><th>Endpoints</th></tr>
+      <tr><th>Type</th><th>Status</th><th>URL</th><th>Format</th><th>Version</th><th>Endpoints</th><th>Coverage</th></tr>
       {{range .Report.JSAnalysis.APISpecs}}
       <tr>
         <td><span class="tag">{{.APIType}}</span></td>
@@ -576,6 +613,7 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
         <td><span class="tag">{{.Format}}</span></td>
         <td class="mono">{{.Version}}</td>
         <td>{{.EndpointCount}}</td>
+        <td>{{if gt .CoveragePercent 0.0}}{{printf "%.0f%%" .CoveragePercent}}{{else}}-{{end}}</td>
       </tr>
       {{end}}
     </table>
@@ -584,7 +622,7 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
     {{if .Report.JSAnalysis.APIEndpoints}}
     <h3>Endpoints ({{len .Report.JSAnalysis.APIEndpoints}})</h3>
     <table>
-      <tr><th>Type</th><th>Status</th><th>Method</th><th>URL</th><th>Version</th><th>Sources</th></tr>
+      <tr><th>Type</th><th>Status</th><th>Method</th><th>URL</th><th>Version</th><th>Auth</th><th>Confidence</th><th>Params</th><th>Sources</th></tr>
       {{range .Report.JSAnalysis.APIEndpoints}}
       <tr>
         <td><span class="tag">{{.APIType}}</span></td>
@@ -592,11 +630,38 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
         <td><span class="tag">{{if .Method}}{{.Method}}{{else}}ANY{{end}}</span></td>
         <td class="mono">{{.URL}}</td>
         <td class="mono">{{.Version}}</td>
+        <td>{{if .AuthRequired}}<span class="severity-medium">required</span>{{else}}<span class="tag">unknown</span>{{end}}</td>
+        <td>{{if gt .Confidence 0.0}}{{printf "%.2f" .Confidence}}{{else}}-{{end}}</td>
+        <td>{{len .Parameters}}</td>
         <td class="mono">{{join .SourceURLs ", "}}</td>
       </tr>
       {{end}}
     </table>
     {{end}}
+  </div>
+</div>
+{{end}}
+
+<!-- API PARAMETERS -->
+{{if .Report.APIParameters}}
+<div class="section">
+  <div class="section-header" onclick="toggle(this)">
+    <span>API Parameters</span>
+    <span class="count">{{len .Report.APIParameters}}</span>
+  </div>
+  <div class="section-body">
+    <table>
+      <tr><th>Name</th><th>Location</th><th>Type</th><th>Required</th><th>Endpoints</th></tr>
+      {{range .Report.APIParameters}}
+      <tr>
+        <td class="mono">{{.Name}}</td>
+        <td><span class="tag">{{.In}}</span></td>
+        <td>{{.Type}}</td>
+        <td>{{if .Required}}yes{{else}}no{{end}}</td>
+        <td class="mono">{{join .Endpoints ", "}}</td>
+      </tr>
+      {{end}}
+    </table>
   </div>
 </div>
 {{end}}
@@ -692,7 +757,7 @@ th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font
   <div class="section-body">
     <p><strong>Title:</strong> {{.Report.ScrapeData.Title}}</p>
     <p><strong>Description:</strong> {{.Report.ScrapeData.Description}}</p>
-    
+
     {{if .Report.ScrapeData.KeywordMatches}}
     <h3>Keyword Matches ({{len .Report.ScrapeData.KeywordMatches}})</h3>
     <table>

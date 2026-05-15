@@ -36,9 +36,6 @@ function Invoke-RustBuild($name, $projectPath, $windowsExeName, $linuxExeName) {
         if ($env:AKEMI_SPEAR_SYN_SCAN -eq "1") {
             $rustFeatures += "syn-scan"
         }
-        if ($env:AKEMI_SPEAR_TLS -eq "1") {
-            $rustFeatures += "tls-native"
-        }
     }
     if (!(Test-Path $cargoTargetDir)) {
         New-Item -ItemType Directory -Path $cargoTargetDir -Force | Out-Null
@@ -85,7 +82,7 @@ function Invoke-RustBuild($name, $projectPath, $windowsExeName, $linuxExeName) {
             Write-Host "[!] Linux Rust build failed for $name."
             Write-Host "    You may need: rustup target add x86_64-unknown-linux-gnu"
             Write-Host "    And a working Linux linker/toolchain on Windows, or use WSL/cross."
-            Write-Host "    If tls-native is enabled, provide a Linux OpenSSL sysroot or build on Linux/WSL."
+            Write-Host "    If syn-scan is enabled, build on Linux/WSL or provide the required cross toolchain."
         }
     }
     finally {
@@ -110,6 +107,12 @@ Invoke-RustBuild `
     -projectPath "Akemi-Spear" `
     -windowsExeName "Akemi-Spear.exe" `
     -linuxExeName "Akemi-Spear"
+
+Invoke-RustBuild `
+    -name "DotHound" `
+    -projectPath "DotHound" `
+    -windowsExeName "dothound.exe" `
+    -linuxExeName "dothound"
 
 Write-Host "`n[*] Akemi build complete!"
 Write-Host "    Windows binaries: ./bin/windows"

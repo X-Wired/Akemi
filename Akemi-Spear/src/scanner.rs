@@ -1,5 +1,5 @@
 // scanner.rs — Core connect-scan engine with rate limiting, randomization, and retry
-use crate::banner_grabber::{grab_banner, load_tcp_templates};
+use crate::banner_grabber::{grab_banner, load_tcp_templates, load_tech_fingerprints};
 use crate::models::{PortResult, ProbeTemplate, ScanRequest, ScanResult, ScanState};
 use crate::rate_limiter::RateLimiter;
 use crate::resume::{filter_remaining_ports, load_state, save_state};
@@ -26,8 +26,13 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
     let ips = resolve_host(&req.host)?;
     let target_ip = ips[0].clone();
 
-    info!("[*] Connect scan on {} ({}) — {} ports, {} threads",
-        req.host, target_ip, req.ports.len(), req.threads);
+    info!(
+        "[*] Connect scan on {} ({}) — {} ports, {} threads",
+        req.host,
+        target_ip,
+        req.ports.len(),
+        req.threads
+    );
 
     // DNS enrichment: reverse DNS for all resolved IPs
     let mut rdns_map: HashMap<String, String> = HashMap::new();
@@ -53,6 +58,11 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
     } else {
         Vec::new()
     });
+    let tech_fingerprints = Arc::new(if req.banner_grab {
+        load_tech_fingerprints(&req.probe_templates_dir)
+    } else {
+        Vec::new()
+    });
 
     // Load resume state
     let state = load_state(&req.resume_file);
@@ -74,7 +84,9 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
     let scanned_count = Arc::new(AtomicU32::new(0));
     let open_count = Arc::new(AtomicU32::new(0));
     let scanned_list = Arc::new(Mutex::new(
-        state.as_ref().map_or(Vec::new(), |s| s.scanned_ports.clone())
+        state
+            .as_ref()
+            .map_or(Vec::new(), |s| s.scanned_ports.clone()),
     ));
 
     // Semaphore for concurrency control — gates connect attempts only
@@ -97,8 +109,10 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
             let elapsed_secs = progress_start.elapsed().as_secs_f64().max(0.1);
             let rate = current as f64 / elapsed_secs;
             if verbose {
-                eprintln!("[progress] {}/{} scanned | {} open | {:.0} ports/sec",
-                    current, total_ports, open, rate);
+                eprintln!(
+                    "[progress] {}/{} scanned | {} open | {:.0} ports/sec",
+                    current, total_ports, open, rate
+                );
             }
             if current >= total_ports {
                 break;
@@ -117,6 +131,7 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
         let retries = req.retries;
         let banner_grab = req.banner_grab;
         let templates = tcp_templates.clone();
+        let fingerprints = tech_fingerprints.clone();
         let open_ports = open_ports.clone();
         let scanned_count = scanned_count.clone();
         let open_count = open_count.clone();
@@ -145,9 +160,19 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
                     // Spawn banner grabbing as a SEPARATE task — does NOT hold the semaphore
                     let ip2 = ip.clone();
                     let templates2 = templates.clone();
+                    let fingerprints2 = fingerprints.clone();
+                    let host_for_banner = host.clone();
                     let open_ports2 = open_ports.clone();
                     let bh = tokio::spawn(async move {
-                        let result = grab_banner(&ip2, port, timeout_ms, &templates2).await;
+                        let result = grab_banner(
+                            &host_for_banner,
+                            &ip2,
+                            port,
+                            timeout_ms,
+                            &templates2,
+                            &fingerprints2,
+                        )
+                        .await;
 
                         let tech_str = if result.technology.is_empty() {
                             "\x1b[90munknown\x1b[0m".to_string()
@@ -170,13 +195,13 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
                         state: "open".to_string(),
                         banner: None,
                         technology: Vec::new(),
+                        tech_matches: Vec::new(),
                         service: None,
                         version: None,
                         tls: false,
                         tls_cn: None,
                     };
-                    eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open",
-                        port);
+                    eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open", port);
                     open_ports.lock().await.push(result);
                 }
             }
@@ -190,7 +215,8 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
 
                 let count = scanned_count.load(Ordering::Relaxed);
                 if count % 500 == 0 && !resume_file.is_empty() {
-                    let open_list: Vec<u16> = open_ports.lock().await.iter().map(|p| p.port).collect();
+                    let open_list: Vec<u16> =
+                        open_ports.lock().await.iter().map(|p| p.port).collect();
                     let state = ScanState {
                         host: host.clone(),
                         scanned_ports: list.clone(),
@@ -235,10 +261,11 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
     let elapsed = start.elapsed();
     let open = open_ports.lock().await.clone();
 
-    eprintln!("[*] Scan completed. {} open ports found in {:.2}s", open.len(), elapsed.as_secs_f64());
-
-    // TTL-based OS detection: sample TTL from first open port connection
-    let (os_hint, ttl_val) = detect_os_from_ttl(&target_ip).await;
+    eprintln!(
+        "[*] Scan completed. {} open ports found in {:.2}s",
+        open.len(),
+        elapsed.as_secs_f64()
+    );
 
     Ok(ScanResult {
         hostname: req.host.clone(),
@@ -248,8 +275,10 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
         scan_time_ms: elapsed.as_millis() as u64,
         total_scanned: scanned_count.load(Ordering::Relaxed),
         scan_mode: "connect".to_string(),
-        os_hint,
-        ttl: ttl_val,
+        // NOTE: Accurate OS detection requires SYN mode (raw packet TTL).
+        // Connect mode cannot read the remote peer's TTL.
+        os_hint: None,
+        ttl: None,
     })
 }
 
@@ -301,57 +330,14 @@ fn resolve_host(host: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// Attempt reverse DNS lookup for an IP address.
+/// Attempt reverse DNS lookup for an IP address using system getnameinfo.
 fn reverse_dns_lookup(ip: &str) -> Option<String> {
     use std::net::IpAddr;
     let ip_addr: IpAddr = ip.parse().ok()?;
-    // Use the system resolver — construct in-addr.arpa for PTR
-    // std::net doesn't expose PTR directly, so we do a best-effort approach
-    match ip_addr {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            let ptr = format!(
-                "{}.{}.{}.{}.in-addr.arpa:0",
-                octets[3], octets[2], octets[1], octets[0]
-            );
-            if let Ok(mut addrs) = ptr.to_socket_addrs() {
-                addrs.next().map(|a| a.ip().to_string())
-            } else {
-                None
-            }
-        }
+    match dns_lookup::lookup_addr(&ip_addr) {
+        Ok(hostname) if hostname != ip => Some(hostname),
         _ => None,
     }
-}
-
-/// Detect OS family from TTL of a TCP connection.
-/// Maps TTL ranges to OS families:
-///   64  → Linux / macOS / BSD
-///   128 → Windows
-///   255 → Cisco / Network devices
-///   32  → Older Windows / Embedded
-async fn detect_os_from_ttl(ip: &str) -> (Option<String>, Option<u32>) {
-    // Try a quick connect to port 80 or 443 to read TTL
-    for port in &[80, 443] {
-        let addr = format!("{}:{}", ip, port);
-        let dur = Duration::from_millis(2000);
-        if let Ok(Ok(stream)) = timeout(dur, TcpStream::connect(&addr)).await {
-            // Read TTL from the socket
-            if let Ok(std_stream) = stream.into_std() {
-                if let Ok(ttl) = std_stream.ttl() {
-                    let os = match ttl {
-                        0..=32 => "Embedded / Older Windows",
-                        33..=64 => "Linux / macOS / BSD",
-                        65..=128 => "Windows",
-                        129..=255 => "Cisco / Network Device",
-                        _ => "Unknown",
-                    };
-                    return (Some(os.to_string()), Some(ttl));
-                }
-            }
-        }
-    }
-    (None, None)
 }
 
 /// Simple timestamp without chrono dependency.

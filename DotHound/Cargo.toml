@@ -1,0 +1,29 @@
+[package]
+name = "dothound"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "dothound"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dothound"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+hex = "0.4"
+rcgen = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "rustls-tls", "json"] }
+rpassword = "7"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
+rustls-pemfile = "2"
+scraper = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = "0.26"
+url = "2"
+webpki-roots = "1"

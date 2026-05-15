@@ -3,24 +3,15 @@ package core
 import (
 	"net/http"
 	"strings"
+	"sync"
 
 	proxy "Akemi/internal/platform/proxy"
 )
 
 // ====================================================
-// Fuzzer Types
+// Fuzzer Types — canonical definitions in interfaces.go
+// FuzzConfig and FuzzResult are defined in interfaces.go
 // ====================================================
-
-type FuzzConfig struct {
-	URL         string
-	Method      string
-	Data        string
-	PayloadFile string
-	OutputFile  string
-	Repeats     int
-	Timeout     int
-	Concurrency int
-}
 
 type FuzzRequest struct {
 	URL         string `json:"url"`
@@ -33,17 +24,6 @@ type FuzzRequest struct {
 	Concurrency int    `json:"concurrency"`
 }
 
-type FuzzResult struct {
-	ID         int    `json:"id"`
-	URL        string `json:"url"`
-	StatusCode int    `json:"status_code"`
-	Lines      int    `json:"lines"`
-	Words      int    `json:"words"`
-	Chars      int    `json:"chars"`
-	Payload    string `json:"payload"`
-	Error      string `json:"error,omitempty"`
-}
-
 // ====================================================
 // Discovery Types
 // ====================================================
@@ -51,6 +31,34 @@ type FuzzResult struct {
 type DiscoveryRequest struct {
 	URL   string `json:"url"`
 	Depth int    `json:"depth"`
+}
+
+const (
+	MinCrawlDepth       = 1
+	MaxCrawlDepth       = 7
+	UnlimitedCrawlDepth = 7
+)
+
+// NormalizeCrawlDepth clamps operator and tool crawl depth to Akemi's managed
+// range. Depth 7 intentionally means unlimited URL budget.
+func NormalizeCrawlDepth(depth int) int {
+	if depth < MinCrawlDepth {
+		return MinCrawlDepth
+	}
+	if depth > MaxCrawlDepth {
+		return MaxCrawlDepth
+	}
+	return depth
+}
+
+// CrawlURLLimitForDepth maps managed crawl depth to a URL budget. A return
+// value of 0 means unlimited.
+func CrawlURLLimitForDepth(depth int) int {
+	depth = NormalizeCrawlDepth(depth)
+	if depth >= UnlimitedCrawlDepth {
+		return 0
+	}
+	return depth * 1000
 }
 
 type ParamsRequest struct {
@@ -147,7 +155,78 @@ func Contains(slice []string, val string) bool {
 	return false
 }
 
-// CreateHTTPClient is a shared helper
+// Default session cookies injected into every HTTP client created via
+// CreateHTTPClient when SetDefaultCookies has been called.
+var (
+	defaultCookies   []string
+	defaultCookiesMu sync.RWMutex
+)
+
+// SetDefaultCookies stores session cookies that will be automatically
+// injected into every HTTP client created via CreateHTTPClient.
+// Pass nil to clear.
+func SetDefaultCookies(cookies []string) {
+	defaultCookiesMu.Lock()
+	defer defaultCookiesMu.Unlock()
+	if cookies == nil {
+		defaultCookies = nil
+		return
+	}
+	defaultCookies = make([]string, len(cookies))
+	copy(defaultCookies, cookies)
+}
+
+// ClearDefaultCookies removes any injected session cookies.
+func ClearDefaultCookies() {
+	SetDefaultCookies(nil)
+}
+
+// GetDefaultCookies returns the currently stored default cookies (may be nil).
+func GetDefaultCookies() []string {
+	defaultCookiesMu.RLock()
+	defer defaultCookiesMu.RUnlock()
+	if defaultCookies == nil {
+		return nil
+	}
+	out := make([]string, len(defaultCookies))
+	copy(out, defaultCookies)
+	return out
+}
+
+// CreateHTTPClient is a shared helper. If default session cookies have been
+// set via SetDefaultCookies, they are automatically injected into every request.
 func CreateHTTPClient(timeout int) *http.Client {
-	return proxy.CreateHTTPClientWithOptions(timeout, proxy.HTTPClientOptions{})
+	defaultCookiesMu.RLock()
+	cookies := defaultCookies
+	defaultCookiesMu.RUnlock()
+
+	return CreateHTTPClientWithCookies(timeout, cookies)
+}
+
+// CreateHTTPClientWithCookies creates a client that injects the provided raw
+// Set-Cookie/Cookie values without mutating the process-wide default cookies.
+func CreateHTTPClientWithCookies(timeout int, cookies []string) *http.Client {
+	if len(cookies) == 0 {
+		return proxy.CreateHTTPClientWithOptions(timeout, proxy.HTTPClientOptions{})
+	}
+
+	cookieHeader := joinCookies(cookies)
+	return proxy.CreateHTTPClientWithOptions(timeout, proxy.HTTPClientOptions{
+		DefaultHeaders: map[string]string{
+			"Cookie": cookieHeader,
+		},
+	})
+}
+
+// joinCookies formats raw Set-Cookie strings as a single Cookie header value.
+func joinCookies(cookies []string) string {
+	var parts []string
+	for _, c := range cookies {
+		if idx := strings.Index(c, ";"); idx >= 0 {
+			parts = append(parts, strings.TrimSpace(c[:idx]))
+		} else {
+			parts = append(parts, strings.TrimSpace(c))
+		}
+	}
+	return strings.Join(parts, "; ")
 }

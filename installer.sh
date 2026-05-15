@@ -54,15 +54,16 @@ install_pkg
 
 # 4. Toolchain: Go
 echo -e "${BLUE}[*] Checking Go toolchain...${NC}"
-GO_REQUIRED="1.25.0"
+GO_REQUIRED="1.24.0"
+RUST_REQUIRED="1.85.0"
 
 check_go() {
     if command -v go &> /dev/null; then
         GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
         echo -e "${GREEN}[+] Found Go version: $GO_VERSION${NC}"
-        # Simplified version comparison
-        if [[ "$GO_VERSION" < "1.22.0" ]]; then
-            echo -e "${YELLOW}[!] Go version is older than 1.22. It is recommended to upgrade.${NC}"
+        if [[ "$(printf '%s\n%s\n' "$GO_REQUIRED" "$GO_VERSION" | sort -V | head -n1)" != "$GO_REQUIRED" ]]; then
+            echo -e "${RED}[!] Go $GO_REQUIRED or newer is required by go.mod.${NC}"
+            exit 1
         fi
     else
         echo -e "${YELLOW}[!] Go not found. Attempting to install latest version...${NC}"
@@ -78,6 +79,11 @@ check_go
 echo -e "${BLUE}[*] Checking Rust toolchain...${NC}"
 if command -v cargo &> /dev/null; then
     echo -e "${GREEN}[+] Found Rust/Cargo.${NC}"
+    RUST_VERSION=$(rustc --version | awk '{print $2}')
+    if [[ "$(printf '%s\n%s\n' "$RUST_REQUIRED" "$RUST_VERSION" | sort -V | head -n1)" != "$RUST_REQUIRED" ]]; then
+        echo -e "${RED}[!] Rust $RUST_REQUIRED or newer is required for DotHound edition 2024.${NC}"
+        exit 1
+    fi
 else
     echo -e "${YELLOW}[!] Rust not found. Installing via rustup...${NC}"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -96,7 +102,7 @@ echo -e "${GREEN}[+] Akemi binary created at bin/linux/Akemi${NC}"
 # 8. Build Akemi-Spear (Rust)
 echo -e "${BLUE}[*] Building Akemi-Spear (Recon Engine)...${NC}"
 cd Akemi-Spear
-cargo build --release --features "syn-scan,tls-native"
+cargo build --release --features "syn-scan"
 cd ..
 cp Akemi-Spear/target/release/Akemi-Spear bin/linux/
 echo -e "${GREEN}[+] Akemi-Spear binary created at bin/linux/Akemi-Spear${NC}"

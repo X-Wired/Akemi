@@ -19,6 +19,8 @@ import (
 	"golang.org/x/net/html"
 )
 
+var crawlRateDelay = 500 * time.Millisecond
+
 // =============================================================
 // ── ORIGINAL DATA STRUCTURES (unchanged) ─────────────────────
 // =============================================================
@@ -100,6 +102,8 @@ type CrawlFinding struct {
 	URL        string `json:"url"`
 	StatusCode int    `json:"status_code"`
 	Status     string `json:"status"`
+	Depth      int    `json:"depth"`
+	SourceURL  string `json:"source_url,omitempty"`
 }
 
 // MiningConfig holds all options for the enhanced param miner.
@@ -117,6 +121,7 @@ type MiningConfig struct {
 	ActiveChunkSize   int      // How many params to test per request (default 15)
 	Keywords          []string // Keywords to search for in content
 	MineKeywords      bool     // Enable keyword discovery
+	Quiet             bool     // Suppress terminal progress output when embedded in TUI/service flows
 }
 
 // DiscoveryResult aggregates all findings from a discovery run.
@@ -150,6 +155,7 @@ type ActiveBruteConfig struct {
 	Timeout   int
 	ChunkSize int
 	Wordlist  []string
+	Quiet     bool
 }
 
 // =============================================================
@@ -199,7 +205,7 @@ func ExtractLinks(pageURL string, body io.Reader) ([]string, error) {
 
 // Crawl recursively visits URLs (within the same host) up to maxDepth using controlled concurrency.
 func Crawl(startURL string, maxDepth int) ([]string, error) {
-	details, err := CrawlDetailed(startURL, maxDepth)
+	details, err := CrawlDetailedWithContext(context.Background(), startURL, maxDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -213,11 +219,49 @@ func Crawl(startURL string, maxDepth int) ([]string, error) {
 // CrawlDetailed recursively visits URLs and preserves the response status for reports and terminal output.
 func CrawlDetailed(startURL string, maxDepth int) ([]CrawlFinding, error) {
 	client := core.CreateHTTPClient(10)
-	return crawlDetailedWithClient(startURL, maxDepth, client)
+	return crawlDetailedWithClientContext(context.Background(), startURL, maxDepth, client)
+}
+
+// CrawlDetailedWithContext is the canonical Akemi crawler entrypoint for
+// service and agent use. It supports cancellation and managed URL budgets.
+func CrawlDetailedWithContext(ctx context.Context, startURL string, maxDepth int) ([]CrawlFinding, error) {
+	client := core.CreateHTTPClient(10)
+	return crawlDetailedWithClientContext(ctx, startURL, maxDepth, client)
 }
 
 func crawlDetailedWithClient(startURL string, maxDepth int, client *http.Client) ([]CrawlFinding, error) {
+	return crawlDetailedWithClientContext(context.Background(), startURL, maxDepth, client)
+}
+
+func crawlDetailedWithClientContext(ctx context.Context, startURL string, maxDepth int, client *http.Client) ([]CrawlFinding, error) {
+	return crawlDetailedWithClientCallbackContext(ctx, startURL, maxDepth, client, nil)
+}
+
+// CrawlDetailedWithCallback recursively visits URLs and reports each observed
+// response as it is discovered. The callback may be called concurrently.
+func CrawlDetailedWithCallback(startURL string, maxDepth int, onFinding func(CrawlFinding)) ([]CrawlFinding, error) {
+	client := core.CreateHTTPClient(10)
+	return crawlDetailedWithClientCallbackContext(context.Background(), startURL, maxDepth, client, onFinding)
+}
+
+// CrawlDetailedWithCallbackContext is the live callback variant used by Akemi
+// tools. It returns partial findings with ctx.Err() when stopped.
+func CrawlDetailedWithCallbackContext(ctx context.Context, startURL string, maxDepth int, onFinding func(CrawlFinding)) ([]CrawlFinding, error) {
+	client := core.CreateHTTPClient(10)
+	return crawlDetailedWithClientCallbackContext(ctx, startURL, maxDepth, client, onFinding)
+}
+
+func crawlDetailedWithClientCallback(startURL string, maxDepth int, client *http.Client, onFinding func(CrawlFinding)) ([]CrawlFinding, error) {
+	return crawlDetailedWithClientCallbackContext(context.Background(), startURL, maxDepth, client, onFinding)
+}
+
+func crawlDetailedWithClientCallbackContext(ctx context.Context, startURL string, maxDepth int, client *http.Client, onFinding func(CrawlFinding)) ([]CrawlFinding, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	startURL = core.EnsureProtocol(startURL)
+	maxDepth = core.NormalizeCrawlDepth(maxDepth)
+	maxURLs := core.CrawlURLLimitForDepth(maxDepth)
 	discovered := make(map[string]bool)
 	details := make(map[string]CrawlFinding)
 	var mu sync.Mutex
@@ -232,39 +276,77 @@ func crawlDetailedWithClient(startURL string, maxDepth int, client *http.Client)
 
 	recordStatus := func(u string, statusCode int, status string) {
 		mu.Lock()
-		details[u] = CrawlFinding{
-			URL:        u,
-			StatusCode: statusCode,
-			Status:     normalizeHTTPStatus(statusCode, status),
-		}
+		finding := details[u]
+		finding.URL = u
+		finding.StatusCode = statusCode
+		finding.Status = normalizeHTTPStatus(statusCode, status)
+		details[u] = finding
 		mu.Unlock()
+		if onFinding != nil {
+			onFinding(finding)
+		}
+	}
+
+	tryReserve := func(u string, depth int, sourceURL string) bool {
+		if depth > maxDepth {
+			return false
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if discovered[u] {
+			return false
+		}
+		if maxURLs > 0 && len(discovered) >= maxURLs {
+			return false
+		}
+		discovered[u] = true
+		details[u] = CrawlFinding{
+			URL:       u,
+			Status:    "PENDING",
+			Depth:     depth,
+			SourceURL: sourceURL,
+		}
+		return true
 	}
 
 	var crawlFunc func(string, int)
 	crawlFunc = func(u string, depth int) {
 		defer wg.Done()
-		if depth > maxDepth {
+		if depth > maxDepth || ctx.Err() != nil {
 			return
 		}
-		mu.Lock()
-		if discovered[u] {
-			mu.Unlock()
-			return
-		}
-		discovered[u] = true
-		if _, ok := details[u]; !ok {
-			details[u] = CrawlFinding{URL: u, StatusCode: 0, Status: "PENDING"}
-		}
-		mu.Unlock()
 
-		semaphore <- struct{}{}
+		select {
+		case semaphore <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
 		defer func() { <-semaphore }()
 
 		// Simple rate limiting.
-		time.Sleep(500 * time.Millisecond)
+		if crawlRateDelay > 0 {
+			timer := time.NewTimer(crawlRateDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+		}
 
-		resp, err := client.Get(u)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
+			recordStatus(u, 0, "ERROR")
+			return
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("Error fetching URL %s: %v", u, err)
 			recordStatus(u, 0, "ERROR")
 			return
@@ -287,20 +369,21 @@ func crawlDetailedWithClient(startURL string, maxDepth int, client *http.Client)
 			if linkURL, err := url.Parse(link); err == nil {
 				// Only follow links within the same host.
 				if linkURL.Host == baseURL.Host {
-					mu.Lock()
-					if !discovered[link] {
+					nextDepth := depth + 1
+					if tryReserve(link, nextDepth, u) {
 						wg.Add(1)
-						go crawlFunc(link, depth+1)
+						go crawlFunc(link, nextDepth)
 					}
-					mu.Unlock()
 				}
 			}
 		}
 	}
 
-	for _, seed := range collectSeedURLs(startURL, client) {
-		wg.Add(1)
-		go crawlFunc(seed, 0)
+	for _, seed := range collectSeedURLsWithContext(ctx, startURL, client) {
+		if tryReserve(seed, 0, "") {
+			wg.Add(1)
+			go crawlFunc(seed, 0)
+		}
 	}
 	wg.Wait()
 
@@ -315,6 +398,9 @@ func crawlDetailedWithClient(startURL string, maxDepth int, client *http.Client)
 	sort.Slice(result, func(i, j int) bool {
 		return crawlFindingLess(result[i], result[j])
 	})
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
@@ -868,8 +954,10 @@ func activeProbeParams(cfg ActiveBruteConfig) (map[string]RichParamDetail, error
 	baseSize := len(baseBody)
 	baseStatus := baseResp.StatusCode
 
-	fmt.Printf("[ActiveBrute] Baseline: HTTP %d, %d bytes\n", baseStatus, baseSize)
-	fmt.Printf("[ActiveBrute] Testing %d params in chunks of %d\n", len(wordlist), cfg.ChunkSize)
+	if !cfg.Quiet {
+		fmt.Printf("[ActiveBrute] Baseline: HTTP %d, %d bytes\n", baseStatus, baseSize)
+		fmt.Printf("[ActiveBrute] Testing %d params in chunks of %d\n", len(wordlist), cfg.ChunkSize)
+	}
 
 	// Step 2: chunk the wordlist and probe each chunk concurrently
 	chunks := chunkSlice(wordlist, cfg.ChunkSize)
@@ -925,8 +1013,10 @@ func activeProbeParams(cfg ActiveBruteConfig) (map[string]RichParamDetail, error
 						mu.Lock()
 						mergeRichParam(result, param, detail)
 						mu.Unlock()
-						fmt.Printf("[ActiveBrute] *** Found param: %s (HTTP %d, %d bytes)\n",
-							param, sResp.StatusCode, len(sBody))
+						if !cfg.Quiet {
+							fmt.Printf("[ActiveBrute] *** Found param: %s (HTTP %d, %d bytes)\n",
+								param, sResp.StatusCode, len(sBody))
+						}
 					}
 				}
 			}
@@ -987,11 +1077,15 @@ func EnhancedDiscoverParams(rawURL string, cfg MiningConfig) (*DiscoveryResult, 
 	var apiEndpoints []APIEndpointFinding
 	var apiSpecs []APISpecFinding
 
-	fmt.Printf("\n[ParamMiner] Starting enhanced param discovery on %s\n", rawURL)
-	fmt.Printf("%s\n", strings.Repeat("-", 55))
+	if !cfg.Quiet {
+		fmt.Printf("\n[ParamMiner] Starting enhanced param discovery on %s\n", rawURL)
+		fmt.Printf("%s\n", strings.Repeat("-", 55))
+	}
 
 	// ── Step 1: Crawl ──────────────────────────────────────────
-	fmt.Println("[ParamMiner] Crawling site...")
+	if !cfg.Quiet {
+		fmt.Println("[ParamMiner] Crawling site...")
+	}
 	crawlDetails, err := CrawlDetailed(rawURL, cfg.Depth)
 	if err != nil {
 		return nil, fmt.Errorf("crawl error: %w", err)
@@ -1000,19 +1094,27 @@ func EnhancedDiscoverParams(rawURL string, cfg MiningConfig) (*DiscoveryResult, 
 	for _, detail := range crawlDetails {
 		discoveredURLs = append(discoveredURLs, detail.URL)
 	}
-	fmt.Printf("[ParamMiner] Crawled %d URLs\n", len(discoveredURLs))
+	if !cfg.Quiet {
+		fmt.Printf("[ParamMiner] Crawled %d URLs\n", len(discoveredURLs))
+	}
 	if summary := summarizeCrawlStatuses(crawlDetails); summary != "" {
-		fmt.Printf("[ParamMiner] Response codes: %s\n", summary)
+		if !cfg.Quiet {
+			fmt.Printf("[ParamMiner] Response codes: %s\n", summary)
+		}
 	}
 
 	// ── Step 2: Path Parameter Detection ──────────────────────
 	if cfg.MinePathParams {
-		fmt.Println("[ParamMiner] Mining path parameters...")
+		if !cfg.Quiet {
+			fmt.Println("[ParamMiner] Mining path parameters...")
+		}
 		pathParams := minePathParams(discoveredURLs)
 		for k, v := range pathParams {
 			mergeRichParam(aggregated, k, v)
 		}
-		fmt.Printf("[ParamMiner] Path params found: %d\n", len(pathParams))
+		if !cfg.Quiet {
+			fmt.Printf("[ParamMiner] Path params found: %d\n", len(pathParams))
+		}
 	}
 
 	// ── Steps 3–6: Per-URL concurrent mining ──────────────────
@@ -1137,13 +1239,16 @@ func EnhancedDiscoverParams(rawURL string, cfg MiningConfig) (*DiscoveryResult, 
 
 	// ── Step 7: Active Brute-Force ─────────────────────────────
 	if cfg.ActiveBrute {
-		fmt.Println("\n[ParamMiner] Starting active param brute-force...")
+		if !cfg.Quiet {
+			fmt.Println("\n[ParamMiner] Starting active param brute-force...")
+		}
 		bruteCfg := ActiveBruteConfig{
 			BaseURL:   rawURL,
 			Threads:   cfg.Threads,
 			Timeout:   cfg.Timeout,
 			ChunkSize: cfg.ActiveChunkSize,
 			Wordlist:  cfg.ActiveWordlist,
+			Quiet:     cfg.Quiet,
 		}
 		bruteParams, err := activeProbeParams(bruteCfg)
 		if err != nil {
@@ -1163,7 +1268,9 @@ func EnhancedDiscoverParams(rawURL string, cfg MiningConfig) (*DiscoveryResult, 
 		}
 	}
 
-	fmt.Printf("\n[ParamMiner] Total unique params discovered: %d\n", len(aggregated))
+	if !cfg.Quiet {
+		fmt.Printf("\n[ParamMiner] Total unique params discovered: %d\n", len(aggregated))
+	}
 	return &DiscoveryResult{
 		Params:          aggregated,
 		KeywordMatches:  keywordAggregated,

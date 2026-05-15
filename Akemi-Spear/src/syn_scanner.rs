@@ -7,7 +7,7 @@
 
 #[cfg(feature = "syn-scan")]
 pub mod inner {
-    use crate::banner_grabber::{grab_banner, load_tcp_templates};
+    use crate::banner_grabber::{grab_banner, load_tcp_templates, load_tech_fingerprints};
     use crate::models::{PortResult, ScanRequest, ScanResult, ScanState};
     use crate::rate_limiter::RateLimiter;
     use crate::resume::{filter_remaining_ports, load_state, save_state};
@@ -53,6 +53,11 @@ pub mod inner {
         } else {
             Vec::new()
         };
+        let tech_fingerprints = if req.banner_grab {
+            load_tech_fingerprints(&req.probe_templates_dir)
+        } else {
+            Vec::new()
+        };
 
         // Load resume state and filter ports
         let state = load_state(&req.resume_file);
@@ -68,7 +73,8 @@ pub mod inner {
 
         // Phase 1: SYN discovery
         eprintln!("[*] Phase 1: SYN discovery ({} ports)...", total_ports);
-        let open_port_numbers = syn_discovery(&target_ip, &ports, req.timeout_ms, &rate_limiter).await;
+        let open_port_numbers =
+            syn_discovery(&target_ip, &ports, req.timeout_ms, &rate_limiter).await;
         eprintln!(
             "[*] Phase 1 complete: {} open ports discovered",
             open_port_numbers.len()
@@ -90,15 +96,18 @@ pub mod inner {
                 let ip = target_ip.clone();
                 let timeout_ms = req.timeout_ms;
                 let templates = tcp_templates.clone();
+                let fingerprints = tech_fingerprints.clone();
                 let results = results.clone();
+                let host = req.host.clone();
                 let p = *port;
 
                 let handle = tokio::spawn(async move {
-                    let result = grab_banner(&ip, p, timeout_ms, &templates).await;
-                    let tech_str = if result.technology.is_empty() { 
-                        "\x1b[90munknown\x1b[0m".to_string() 
-                    } else { 
-                        format!("\x1b[36m{}\x1b[0m", result.technology.join(", ")) 
+                    let result =
+                        grab_banner(&host, &ip, p, timeout_ms, &templates, &fingerprints).await;
+                    let tech_str = if result.technology.is_empty() {
+                        "\x1b[90munknown\x1b[0m".to_string()
+                    } else {
+                        format!("\x1b[36m{}\x1b[0m", result.technology.join(", "))
                     };
 
                     eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open | Tech: {} | Banner: \x1b[90m{}\x1b[0m",
@@ -124,6 +133,7 @@ pub mod inner {
                     state: "open".to_string(),
                     banner: None,
                     technology: Vec::new(),
+                    tech_matches: Vec::new(),
                     service: None,
                     version: None,
                     tls: false,
@@ -150,14 +160,29 @@ pub mod inner {
             let _ = save_state(&req.resume_file, &final_state);
         }
 
+        // DNS enrichment: reverse DNS for all resolved IPs
+        let mut rdns_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for ip in &ips {
+            if let Ok(ip_addr) = ip.parse::<std::net::IpAddr>() {
+                if let Ok(hostname) = dns_lookup::lookup_addr(&ip_addr) {
+                    if hostname != *ip {
+                        rdns_map.insert(ip.clone(), hostname);
+                    }
+                }
+            }
+        }
+
         Ok(ScanResult {
             hostname: req.host.clone(),
             ips,
-            rdns: std::collections::HashMap::new(),
+            rdns: rdns_map,
             open_ports,
             scan_time_ms: elapsed.as_millis() as u64,
             total_scanned: total_ports,
             scan_mode: "syn".to_string(),
+            // NOTE: SYN mode TTL-based OS detection requires Layer3 packet capture.
+            // Planned for future enhancement.
             os_hint: None,
             ttl: None,
         })
@@ -257,12 +282,8 @@ pub mod inner {
         done_sending.store(true, Ordering::Relaxed);
         let _ = rx_handle.join();
 
-        let discovered_ports = {
-            let locked = open_ports.lock().await;
-            locked.iter().cloned().collect()
-        };
-
-        discovered_ports
+        let guard = open_ports.lock().await;
+        guard.iter().cloned().collect()
     }
 
     /// Resolve host for SYN scan (must be IPv4).
@@ -301,7 +322,9 @@ pub mod inner {
     use crate::scanner::run_connect_scan;
 
     pub async fn run_syn_scan(req: &ScanRequest) -> Result<ScanResult, String> {
-        eprintln!("[!] SYN scan not available: akemi-scanner was built without the 'syn-scan' feature.");
+        eprintln!(
+            "[!] SYN scan not available: Akemi-Spear was built without the 'syn-scan' feature."
+        );
         eprintln!("[!] Rebuild with: cargo build --features syn-scan");
         eprintln!("[!] (Requires Npcap on Windows, libpcap on Linux)");
         eprintln!("[!] Falling back to connect scan...");

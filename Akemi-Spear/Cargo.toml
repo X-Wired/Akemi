@@ -1,14 +1,19 @@
 [package]
 name = "Akemi-Spear"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "High-performance port scanner engine for Akemi"
 authors = ["Wired & Fuwa"]
+license = "Proprietary"
+repository = "https://github.com/X-Wired/Akemi"
+
+[[bin]]
+name = "Akemi-Spear"
+path = "src/main.rs"
 
 [features]
 default = []
 syn-scan = ["pnet"]
-tls-native = ["tokio-native-tls", "native-tls"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -22,8 +27,10 @@ rand = "0.9"
 regex = "1"
 log = "0.4"
 env_logger = "0.11"
-tokio-native-tls = { version = "0.3", optional = true }
-native-tls = { version = "0.2", optional = true }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-native-certs = "0.8"
+dns-lookup = "2"
 
 [profile.release]
 opt-level = 3

@@ -29,7 +29,11 @@ pub fn filter_remaining_ports(ports: &[u16], state: &Option<ScanState>) -> Vec<u
     match state {
         Some(s) => {
             let scanned: HashSet<u16> = s.scanned_ports.iter().cloned().collect();
-            ports.iter().filter(|p| !scanned.contains(p)).cloned().collect()
+            ports
+                .iter()
+                .filter(|p| !scanned.contains(p))
+                .cloned()
+                .collect()
         }
         None => ports.to_vec(),
     }
