@@ -1,0 +1,401 @@
+# ═══════════════════════════════════════════════════════════════════
+# Akemi v2.0.0 — Environment Configuration (EXAMPLE)
+# ═══════════════════════════════════════════════════════════════════
+# Copy this file to akemi.conf and fill in your values.
+#   cp akemi.conf.example akemi.conf
+#
+# Location: ./akemi.conf, ~/.akemi/config.toml, or /etc/akemi/akemi.conf
+# Environment variables override all settings (AKEMI_* prefix)
+# CLI flags override environment variables (highest priority)
+# ═══════════════════════════════════════════════════════════════════
+
+# ── General ──────────────────────────────────────────────────────
+[general]
+# Log level: debug, info, warn, error
+log_level = "info"
+
+# Suppress ASCII art and decorative output
+quiet = false
+
+# Network timeout in seconds
+timeout = 10
+
+# Default output directory for reports, graphs, and results
+output_dir = "./results"
+
+# ── Proxy ────────────────────────────────────────────────────────
+[proxy]
+# Route all outbound HTTP/TCP traffic through this proxy
+# Supported schemes: http://, https://, socks5://, socks5h://
+url = ""
+
+# Comma-separated hosts/domains to bypass the proxy
+no_proxy = "localhost,127.0.0.1,.local"
+
+# ── Scanner (Akemi-Spear) ────────────────────────────────────────
+[scanner]
+# Default ports to scan (comma-separated, ranges supported)
+default_ports = "top-1000"
+
+# Concurrent scan threads
+default_threads = 200
+
+# Timeout per port in seconds
+default_timeout = 3
+
+# Rate limit: connections per second (0 = unlimited)
+default_rate = 0
+
+# Use SYN stealth scan (requires admin/root + Npcap on Windows)
+syn_scan = false
+
+# Randomize port scan order (IDS evasion)
+randomize = true
+
+# Retries for timed-out ports
+retries = 1
+
+# Directory containing YAML probe templates for banner grabbing
+probe_dir = "./probes"
+
+# ── Discovery ────────────────────────────────────────────────────
+[discovery]
+# Default crawl depth (how many links to follow)
+crawl_depth = 3
+
+# Mine parameters from JavaScript files
+mine_js = true
+
+# Mine parameters from HTML forms
+mine_forms = true
+
+# Mine parameters from JSON API responses
+mine_json = true
+
+# Detect REST path parameters (/users/:id)
+mine_path = true
+
+# Active parameter brute-force (Arjun-style)
+active_brute = false
+
+# ── Vulnerability Probing ────────────────────────────────────────
+[vuln]
+# Concurrent probe threads
+threads = 5
+
+# Timeout per probe in seconds
+timeout = 10
+
+# Directory containing YAML probe templates
+template_dir = "./probes"
+
+# Default template tags (empty = all)
+default_tags = ""
+
+# ── Fuzzing ──────────────────────────────────────────────────────
+[fuzzing]
+# Default concurrency for fuzzing
+default_concurrency = 10
+
+# Default timeout for fuzzing requests
+default_timeout = 10
+
+# Default wordlist file
+default_payload_file = "payloads.txt"
+
+# ── Reporting ────────────────────────────────────────────────────
+[reporting]
+# Output directory for reports
+output_dir = "./results"
+
+# Generate HTML reports by default
+generate_html = true
+
+# Generate JSON reports by default
+generate_json = false
+
+# ── Database (Persistence) ───────────────────────────────────────
+[database]
+# Database driver: sqlite (default) or postgres
+driver = "sqlite"
+
+# Data Source Name (file path for SQLite, connection string for Postgres)
+dsn = "akemi.db"
+
+# ── MCP Server (Model Context Protocol) ──────────────────────────
+[mcp_server]
+# Enable MCP server mode
+enabled = false
+
+# Transport: stdio (for Claude Desktop) or http (Streamable HTTP)
+# Env override: AKEMI_MCP_SERVER_TRANSPORT
+transport = "stdio"
+
+# Host to bind HTTP server (only for http transport)
+# Env override: AKEMI_MCP_SERVER_HOST
+host = "127.0.0.1"
+
+# Port for HTTP server
+# Env override: AKEMI_MCP_SERVER_PORT
+port = 9090
+
+# Streamable HTTP MCP endpoint path
+# Env override: AKEMI_MCP_SERVER_PATH
+path = "/mcp"
+
+# Bearer token for HTTP transport authentication. Prefer AKEMI_MCP_SERVER_API_KEY.
+api_key = ""
+
+# Browser origins allowed to connect to HTTP MCP. Prefer AKEMI_MCP_SERVER_ALLOWED_ORIGINS.
+allowed_origins = []
+
+# ═══════════════════════════════════════════════════════════════════
+# LLM VENDOR CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════
+# Akemi's agent system can use LLMs for:
+#   1. Novel plan generation (when no pre-built template matches)
+#   2. Finding analysis and report synthesis
+#   3. Natural language goal interpretation
+#
+# At least one vendor must be configured for agent mode.
+# The MCP server does NOT require LLM keys — the LLM host provides them.
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Anthropic (Claude) ───────────────────────────────────────────
+[llm.anthropic]
+# API key for Anthropic Claude models
+# Env override: AKEMI_LLM_ANTHROPIC_KEY
+api_key = ""
+
+# Default model
+# Options: claude-3-5-sonnet-20241022, claude-3-opus-20240229,
+#          claude-3-5-haiku-20241022, claude-3-sonnet-20240229
+model = "claude-3-5-sonnet-20241022"
+
+# API base URL (override for proxies or compatible APIs)
+base_url = "https://api.anthropic.com"
+
+# Max tokens for agent responses
+max_tokens = 4096
+
+# Temperature for agent planning (0 = deterministic, 1 = creative)
+temperature = 0.3
+
+# Requests per minute limit (Anthropic tier-dependent)
+max_rpm = 50
+
+# ── OpenAI ───────────────────────────────────────────────────────
+[llm.openai]
+# API key for OpenAI models
+# Env override: AKEMI_LLM_OPENAI_KEY
+api_key = ""
+
+# Default model
+# Options: gpt-4o, gpt-4o-mini, gpt-4-turbo, o1-preview, o1-mini
+model = "gpt-4o-mini"
+
+# API base URL (override for Azure, proxies, or compatible APIs)
+base_url = "https://api.openai.com/v1"
+
+# Organization ID (optional, for multi-org accounts)
+org_id = ""
+
+# Max tokens for agent responses
+max_tokens = 4096
+
+# Temperature
+temperature = 0.3
+
+# Requests per minute limit
+max_rpm = 60
+
+# ── DeepSeek ─────────────────────────────────────────────────────
+[llm.deepseek]
+# API key for DeepSeek models
+# Env override: AKEMI_LLM_DEEPSEEK_KEY
+api_key = ""
+
+# Default model
+model = "deepseek-v4-pro"
+
+# API base URL
+base_url = "https://api.deepseek.com"
+
+# Max tokens for agent responses
+max_tokens = 4096
+
+# Temperature
+temperature = 0.3
+
+# Requests per minute limit
+max_rpm = 60
+
+# Reasoning effort (low, medium, high)
+reasoning_effort = "medium"
+
+# Thinking mode
+thinking = false
+
+# ── MCP Client / Tool Sources ────────────────────────────────────
+[mcp_client]
+# Enable MCP tools for the built-in AI assistant.
+enabled = true
+
+# Tool approval policy: ask, allow, deny
+# ask is the recommended default for engagements.
+approval_policy = "ask"
+
+[[mcp_client.servers]]
+name = "akemi"
+transport = "inprocess"
+enabled = true
+
+# ── Google (Gemini) ──────────────────────────────────────────────
+[llm.google]
+# API key for Google Gemini models
+# Env override: AKEMI_LLM_GOOGLE_KEY
+api_key = ""
+
+# Default model
+# Options: gemini-2.0-flash-exp, gemini-1.5-pro, gemini-1.5-flash
+model = "gemini-2.0-flash-exp"
+
+# API base URL
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+# Max tokens
+max_tokens = 4096
+
+# Temperature
+temperature = 0.3
+
+# Requests per minute limit
+max_rpm = 30
+
+# ── Local / Self-Hosted (Ollama, vLLM, LiteLLM) ──────────────────
+[llm.local]
+# Use a local LLM via OpenAI-compatible API (Ollama, vLLM, LM Studio)
+# Env override: AKEMI_LLM_LOCAL_KEY (usually "ollama" or empty)
+api_key = ""
+
+# Model name (e.g., "llama3.1:70b", "qwen2.5:32b", "deepseek-r1:32b")
+model = "llama3.1:8b"
+
+# API base URL for local server
+# Ollama default: http://localhost:11434/v1
+# vLLM default:    http://localhost:8000/v1
+# LM Studio:       http://localhost:1234/v1
+base_url = "http://localhost:11434/v1"
+
+# Max tokens
+max_tokens = 4096
+
+# Temperature
+temperature = 0.3
+
+# Requests per minute (local models have no rate limit, but be reasonable)
+max_rpm = 100
+
+# ── LLM Selection ────────────────────────────────────────────────
+[llm]
+# Which LLM vendor to use for agent planning
+# Options: anthropic, openai, deepseek, google, local
+provider = "deepseek"
+
+# Fallback provider if primary is unavailable (empty = no fallback)
+fallback_provider = ""
+
+# ═══════════════════════════════════════════════════════════════════
+# AGENT CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════
+
+[agent]
+# Maximum concurrent tasks during plan execution
+max_concurrent_tasks = 5
+
+# Maximum duration for an agent run (0 = no limit)
+# Format: 30m, 1h, 2h30m
+max_duration = "30m"
+
+# Require human confirmation for intrusive/destructive operations
+require_confirmation = true
+
+# Default risk level for autonomous operations
+# safe | passive | active | intrusive (destructive always requires confirmation)
+default_risk_level = "active"
+
+# Use LLM for novel plan generation (when no pre-built template matches)
+use_llm_planning = true
+
+# Maximum retries for failed tasks
+max_retries = 2
+
+# Delay between retries (seconds)
+retry_delay = 2
+
+# ═══════════════════════════════════════════════════════════════════
+# SAFETY / SCOPE
+# ═══════════════════════════════════════════════════════════════════
+
+[safety]
+# Allowed domains for agent operations (empty = allow all, DANGEROUS)
+# Wildcards supported: *.example.com
+allowed_domains = []
+
+# Allowed CIDR ranges (empty = allow all)
+allowed_cidrs = []
+
+# Explicitly blocked domains (takes precedence over allowed)
+blocked_domains = [
+    "*.gov",
+    "*.mil",
+]
+
+# Maximum requests per minute per target
+max_requests_per_min = 300
+
+# Maximum concurrent connections per target
+max_concurrent_per_target = 50
+
+# Pause between requests to the same target (milliseconds)
+request_delay_ms = 100
+
+# ═══════════════════════════════════════════════════════════════════
+# PLUGINS / EXTENSIONS
+# ═══════════════════════════════════════════════════════════════════
+
+[plugins]
+# Directory for custom probe templates
+custom_probes_dir = "./probes/custom"
+
+# Path to ExploitDB CSV file
+exploitdb_path = ""
+
+# Path to custom wordlists directory
+wordlist_dir = "./wordlists"
+
+# Enable DotHound integration for auth capture
+enable_dothound = true
+
+# ═══════════════════════════════════════════════════════════════════
+# ADVANCED
+# ═══════════════════════════════════════════════════════════════════
+
+[advanced]
+# Maximum response body size to capture (bytes)
+max_body_capture = 1048576  # 1 MB
+
+# User-Agent string for HTTP requests
+user_agent = "Akemi/2.0.0 (Security Assessment Framework)"
+
+# Follow redirects automatically
+follow_redirects = true
+
+# Maximum redirects to follow
+max_redirects = 10
+
+# Enable TLS verification (disable only for testing!)
+tls_verify = true
+
+# HTTP/2 support
+http2 = false
