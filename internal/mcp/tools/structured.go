@@ -18,6 +18,7 @@ func (r *ToolRegistry) CallStructured(ctxIface interface{}, name string, args ma
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	name = canonicalToolName(name)
 	rt, ok := r.tools[name]
 	if !ok {
 		return nil, fmt.Errorf("tool not found: %s", name)
@@ -147,7 +148,7 @@ func toolRisk(name string) string {
 		return "safe"
 	case "akemi_probe_vulns", "akemi_fuzz", "akemi_auth_capture":
 		return "intrusive"
-	case "akemi_port_scan", "akemi_host_discover", "akemi_crawl", "akemi_scrape_page", "akemi_full_surface_map":
+	case "akemi_port_scan", "akemi_host_discover", "akemi_crawl", "akemi_scrape_page", "akemi_full_surface_map", "akemi_full_surface_scan":
 		return "active"
 	default:
 		return "passive"
@@ -158,7 +159,7 @@ func toolCategory(name string) string {
 	switch name {
 	case "akemi_port_scan", "akemi_host_discover", "akemi_subdomain_enum", "akemi_dork":
 		return "reconnaissance"
-	case "akemi_crawl", "akemi_full_surface_map", "akemi_mine_params", "akemi_analyze_js", "akemi_scrape_page", "akemi_discover_api", "akemi_api_hunter", "akemi_tech_fingerprint":
+	case "akemi_crawl", "akemi_full_surface_map", "akemi_full_surface_scan", "akemi_mine_params", "akemi_analyze_js", "akemi_scrape_page", "akemi_discover_api", "akemi_api_hunter", "akemi_tech_fingerprint":
 		return "discovery"
 	case "akemi_probe_vulns", "akemi_check_headers", "akemi_auth_capture":
 		return "vulnerability_validation"
@@ -181,7 +182,7 @@ func toolProvides(name string) []string {
 		return []string{"subdomains"}
 	case "akemi_crawl":
 		return []string{"urls"}
-	case "akemi_full_surface_map":
+	case "akemi_full_surface_map", "akemi_full_surface_scan":
 		return []string{"surface_map", "open_ports", "urls", "parameters", "api_endpoints", "subdomains", "findings", "secrets"}
 	case "akemi_mine_params":
 		return []string{"parameters"}
@@ -228,7 +229,7 @@ func assistantHidden(name string) bool {
 
 func toolRiskIdempotent(name string) bool {
 	switch name {
-	case "akemi_crawl", "akemi_full_surface_map", "akemi_mine_params", "akemi_analyze_js", "akemi_discover_api", "akemi_api_hunter", "akemi_probe_vulns", "akemi_fuzz", "akemi_auth_capture", "akemi_write_report":
+	case "akemi_crawl", "akemi_full_surface_map", "akemi_full_surface_scan", "akemi_mine_params", "akemi_analyze_js", "akemi_discover_api", "akemi_api_hunter", "akemi_probe_vulns", "akemi_fuzz", "akemi_auth_capture", "akemi_write_report":
 		return false
 	default:
 		return true
@@ -259,6 +260,7 @@ func (jm *JobManager) Start(svc *Services, kind string, args map[string]interfac
 	if kind == "" {
 		kind = "full_surface_map"
 	}
+	kind = canonicalRunKind(kind)
 	if kind != "full_surface_map" {
 		return mcpstate.JobRecord{}, fmt.Errorf("unsupported job kind %q", kind)
 	}
@@ -302,6 +304,15 @@ func (jm *JobManager) Start(svc *Services, kind string, args map[string]interfac
 	}()
 
 	return job, nil
+}
+
+func canonicalRunKind(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "full_surface_scan", "akemi_full_surface_scan", "akemi_full_surface_map":
+		return "full_surface_map"
+	default:
+		return kind
+	}
 }
 
 // Cancel cancels a running job.

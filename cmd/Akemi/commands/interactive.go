@@ -28,6 +28,8 @@ Navigation:
   Mouse click       Focus a panel
   Mouse drag        Resize panel borders
   Mouse scroll      Scroll within focused panel
+  Ctrl+Y            Copy focused panel/selected discovery row
+  Ctrl+M            Toggle mouse mode for native terminal selection
   F5 / Ctrl+O       Open DeepSeek/OpenAI API settings
   Ctrl+B            Toggle bottom status bar
   Ctrl+C            Quit`,

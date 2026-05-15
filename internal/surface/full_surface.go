@@ -21,7 +21,7 @@ type Services struct {
 }
 
 // FullSurfaceConfig mirrors the dashboard target configuration for
-// full_surface_map.
+// full_surface_map / full_surface_scan.
 type FullSurfaceConfig struct {
 	Target    string
 	Domain    string
@@ -76,6 +76,7 @@ type Callbacks struct {
 	Param        func(name string, detail core.ParamDetail)
 	JSAnalysis   func(pageURL string, result *core.JSAnalysisResult)
 	APIResult    func(*core.APISurfaceResult)
+	APIParameter func(core.APIParameterFinding)
 	Subdomain    func(core.SubdomainResult)
 }
 
@@ -88,7 +89,7 @@ type apiHunterDiscoverer interface {
 }
 
 // RunFullSurfaceMap executes the dashboard full_surface_map service sequence:
-// port scan, crawl, header/tech probes, parameter mining, JS analysis, API
+// crawl, port scan, header/tech probes, parameter mining, JS analysis, API
 // discovery, and subdomain enumeration.
 func RunFullSurfaceMap(ctx context.Context, svc Services, cfg FullSurfaceConfig, cb Callbacks) (*FullSurfaceResult, error) {
 	cfg = normalizeConfig(cfg)
@@ -121,35 +122,6 @@ func RunFullSurfaceMap(ctx context.Context, svc Services, cfg FullSurfaceConfig,
 		}
 	}
 
-	progress(cb, "Port scanning")
-	if svc.Scanner != nil {
-		ports := ParseDashboardPorts(cfg.PortRange)
-		scanReq := core.ScanRequest{
-			Host:           cfg.Target,
-			Ports:          ports,
-			Threads:        cfg.Threads,
-			TimeoutMs:      cfg.Timeout * 1000,
-			Rate:           cfg.Rate,
-			SynMode:        cfg.SynMode,
-			Randomize:      cfg.Randomize,
-			BannerGrab:     true,
-			SuppressOutput: true,
-		}
-		if scan, err := svc.Scanner.Scan(ctx, scanReq); err != nil {
-			result.addError("Port scanning", err)
-		} else if scan != nil {
-			result.PortScan = scan
-			for _, port := range scan.OpenPorts {
-				if cb.Port != nil {
-					cb.Port(port)
-				}
-			}
-		}
-	}
-	if err := checkCtx(); err != nil {
-		return result, err
-	}
-
 	progress(cb, "Crawling")
 	var crawledURLs []string
 	if svc.Discoverer != nil {
@@ -176,6 +148,35 @@ func RunFullSurfaceMap(ctx context.Context, svc Services, cfg FullSurfaceConfig,
 			}
 			if !liveUsed && cb.CrawlFinding != nil {
 				cb.CrawlFinding(finding)
+			}
+		}
+	}
+	if err := checkCtx(); err != nil {
+		return result, err
+	}
+
+	progress(cb, "Port scanning")
+	if svc.Scanner != nil {
+		ports := ParseDashboardPorts(cfg.PortRange)
+		scanReq := core.ScanRequest{
+			Host:           cfg.Target,
+			Ports:          ports,
+			Threads:        cfg.Threads,
+			TimeoutMs:      cfg.Timeout * 1000,
+			Rate:           cfg.Rate,
+			SynMode:        cfg.SynMode,
+			Randomize:      cfg.Randomize,
+			BannerGrab:     true,
+			SuppressOutput: true,
+		}
+		if scan, err := svc.Scanner.Scan(ctx, scanReq); err != nil {
+			result.addError("Port scanning", err)
+		} else if scan != nil {
+			result.PortScan = scan
+			for _, port := range scan.OpenPorts {
+				if cb.Port != nil {
+					cb.Port(port)
+				}
 			}
 		}
 	}
@@ -271,6 +272,11 @@ func RunFullSurfaceMap(ctx context.Context, svc Services, cfg FullSurfaceConfig,
 				result.APIEndpoints = append(result.APIEndpoints, huntResult.APIEndpoints...)
 				result.APISpecs = append(result.APISpecs, huntResult.APISpecs...)
 				result.APIParameters = append(result.APIParameters, huntResult.Parameters...)
+				for _, param := range huntResult.Parameters {
+					if cb.APIParameter != nil {
+						cb.APIParameter(param)
+					}
+				}
 				apiResult = &core.APISurfaceResult{APIEndpoints: huntResult.APIEndpoints, APISpecs: huntResult.APISpecs}
 			}
 		} else if discovered, err := svc.Discoverer.DiscoverAPISurface(ctx, cfg.Target, crawledURLs); err != nil {

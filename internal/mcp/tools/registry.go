@@ -126,6 +126,7 @@ func (r *ToolRegistry) Call(ctxIface interface{}, name string, args map[string]i
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	name = canonicalToolName(name)
 	rt, ok := r.tools[name]
 	if !ok {
 		return nil, fmt.Errorf("tool not found: %s", name)
@@ -138,6 +139,15 @@ func (r *ToolRegistry) Call(ctxIface interface{}, name string, args map[string]i
 	}
 
 	return rt.Handler(ctx, args, r.services)
+}
+
+func canonicalToolName(name string) string {
+	switch strings.TrimSpace(name) {
+	case "akemi_full_surface_scan", "full_surface_scan", "full_surface_map":
+		return "akemi_full_surface_map"
+	default:
+		return name
+	}
 }
 
 // registerAll adds every standard Akemi tool to the registry.
@@ -221,7 +231,29 @@ func (r *ToolRegistry) registerAll() {
 	r.register(RegisteredTool{
 		Tool: mcp.Tool{
 			Name:        "akemi_full_surface_map",
-			Description: "Run Akemi's dedicated full_surface_map workflow using the same service sequence as the target configuration dashboard: port scan, managed crawl, header/tech probes, parameter mining, JavaScript analysis, API discovery, and subdomain enumeration.",
+			Description: "Run Akemi's dedicated full_surface_map workflow using the same live service sequence as the target configuration dashboard: managed crawl, port scan, header/tech probes, parameter mining, JavaScript analysis, API discovery, and subdomain enumeration.",
+			InputSchema: mcp.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]mcp.Property{
+					"target":     {Type: "string", Description: "Target URL, hostname, or IP. Defaults to the configured active target."},
+					"domain":     {Type: "string", Description: "Domain to use for subdomain enumeration. Defaults to the target hostname."},
+					"port_range": {Type: "string", Description: "Dashboard port range, e.g. top-1000 or 80,443,8080", Default: "top-1000"},
+					"threads":    {Type: "integer", Description: "Concurrent scan/probe threads", Default: float64(200)},
+					"timeout":    {Type: "integer", Description: "Network timeout in seconds", Default: float64(10)},
+					"depth":      {Type: "integer", Description: "Managed crawl depth 1-7. 1=1000 URLs, 2=2000 URLs, ... 6=6000 URLs, 7=unlimited URL budget.", Default: float64(2)},
+					"rate":       {Type: "number", Description: "Port scan rate limit in connections/second (0 = unlimited)", Default: float64(0)},
+					"syn_mode":   {Type: "boolean", Description: "Use SYN scan mode for the port scan", Default: false},
+					"randomize":  {Type: "boolean", Description: "Randomize port scan order", Default: true},
+				},
+			},
+		},
+		Handler: handleFullSurfaceMap,
+	})
+
+	r.register(RegisteredTool{
+		Tool: mcp.Tool{
+			Name:        "akemi_full_surface_scan",
+			Description: "Alias for akemi_full_surface_map. Runs the full_surface_scan/full_surface_map workflow and streams port, crawl, parameter, JavaScript, API, subdomain, finding, and secret discoveries.",
 			InputSchema: mcp.ToolInputSchema{
 				Type: "object",
 				Properties: map[string]mcp.Property{
@@ -536,11 +568,11 @@ func (r *ToolRegistry) registerAll() {
 	r.register(RegisteredTool{
 		Tool: mcp.Tool{
 			Name:        "akemi_start_run",
-			Description: "Start a long-running Akemi job. Currently supports kind=full_surface_map and returns a run ID for status, cancellation, and artifact retrieval.",
+			Description: "Start a long-running Akemi job. Currently supports kind=full_surface_map or full_surface_scan and returns a run ID for status, cancellation, and artifact retrieval.",
 			InputSchema: mcp.ToolInputSchema{
 				Type: "object",
 				Properties: map[string]mcp.Property{
-					"kind":       {Type: "string", Description: "Job kind", Default: "full_surface_map", Enum: []string{"full_surface_map"}},
+					"kind":       {Type: "string", Description: "Job kind", Default: "full_surface_map", Enum: []string{"full_surface_map", "full_surface_scan"}},
 					"target":     {Type: "string", Description: "Target URL, hostname, or IP"},
 					"domain":     {Type: "string", Description: "Domain for subdomain enumeration"},
 					"port_range": {Type: "string", Description: "Port range", Default: "top-1000"},

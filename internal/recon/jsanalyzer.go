@@ -139,10 +139,6 @@ func AnalyzeJS(pageURL string) (*JSAnalysisResult, error) {
 		APISpecs:        analysis.APISpecs,
 	}
 
-	if len(result.ScriptURLs) == 0 {
-		fmt.Println("  [!] No external scripts found on the page.")
-	}
-
 	return result, nil
 }
 

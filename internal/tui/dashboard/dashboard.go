@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -26,13 +28,22 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
 	defaultSplitH = 0.40
-	defaultSplitV = 0.50
+	defaultSplitV = 0.76
 
 	eventBufferSize = 200
+)
+
+type layoutDragMode int
+
+const (
+	layoutDragNone layoutDragMode = iota
+	layoutDragVertical
+	layoutDragHorizontal
 )
 
 // DashboardServices contains the service adapters the TUI can call.
@@ -77,9 +88,11 @@ type Dashboard struct {
 	width  int
 	height int
 
-	splitH float64
-	splitV float64
-	focus  FocusMsg
+	splitH       float64
+	splitV       float64
+	focus        FocusMsg
+	dragMode     layoutDragMode
+	mouseEnabled bool
 
 	workspace FocusMsg
 
@@ -91,6 +104,7 @@ type Dashboard struct {
 
 	services DashboardServices
 	events   chan tea.Msg
+	polling  bool
 
 	showBanner bool
 	ready      bool
@@ -130,21 +144,32 @@ type conversationStartedMsg struct {
 	Offline bool
 }
 
+type dashboardPolledMsg struct {
+	Msg tea.Msg
+}
+
+type clipboardCopyDoneMsg struct {
+	Label string
+	Bytes int
+	Error string
+}
+
 // NewDashboard creates a dashboard model using the provided service bundle.
 func NewDashboard(services DashboardServices) *Dashboard {
 	d := &Dashboard{
-		splitH:      defaultSplitH,
-		splitV:      defaultSplitV,
-		focus:       FocusTarget,
-		workspace:   FocusAgent,
-		target:      NewTargetPanel(),
-		discovery:   NewDiscoveryPanel(),
-		system:      NewSystemPanel(),
-		agent:       NewAgentPanel(),
-		apiSettings: newAPISettingsModal(),
-		services:    services,
-		events:      make(chan tea.Msg, eventBufferSize),
-		showBanner:  true,
+		splitH:       defaultSplitH,
+		splitV:       defaultSplitV,
+		focus:        FocusTarget,
+		mouseEnabled: true,
+		workspace:    FocusAgent,
+		target:       NewTargetPanel(),
+		discovery:    NewDiscoveryPanel(),
+		system:       NewSystemPanel(),
+		agent:        NewAgentPanel(),
+		apiSettings:  newAPISettingsModal(),
+		services:     services,
+		events:       make(chan tea.Msg, eventBufferSize),
+		showBanner:   true,
 	}
 	d.updateFocus()
 
@@ -166,7 +191,7 @@ func (d *Dashboard) Init() tea.Cmd {
 		d.discovery.Init(),
 		d.system.Init(),
 		d.agent.Init(),
-		d.pollEvents(),
+		d.scheduleEventPoll(),
 	)
 }
 
@@ -180,8 +205,13 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds := make([]tea.Cmd, 0, 8)
 
 	switch msg := msg.(type) {
+	case dashboardPolledMsg:
+		d.polling = false
+		model, cmd := d.Update(msg.Msg)
+		return model, batchCmds(cmd, d.scheduleEventPoll())
+
 	case AgentTickMsg:
-		cmds = append(cmds, d.pollEvents())
+		cmds = append(cmds, d.scheduleEventPoll())
 		return d, batchCmds(cmds...)
 
 	case tea.WindowSizeMsg:
@@ -193,7 +223,7 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolbridge.Event:
 		cmds = append(cmds, d.handleToolBridgeEvent(msg)...)
-		cmds = append(cmds, d.pollEvents())
+		cmds = append(cmds, d.scheduleEventPoll())
 		return d, batchCmds(cmds...)
 
 	case tea.KeyMsg:
@@ -212,7 +242,23 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if d.apiSettings.visible {
 			return d, nil
 		}
+		if !d.mouseEnabled {
+			return d, nil
+		}
+		if cmd, handled := d.handleLayoutMouse(msg); handled {
+			cmds = append(cmds, cmd)
+			return d, batchCmds(cmds...)
+		}
 		cmds = append(cmds, d.routeMouseToFocused(msg))
+
+	case clipboardCopyDoneMsg:
+		if msg.Error != "" {
+			d.setDashboardStatus("Copy failed: " + msg.Error)
+		} else if msg.Bytes > 0 {
+			d.setDashboardStatus(fmt.Sprintf("Copied %s (%d bytes)", msg.Label, msg.Bytes))
+		} else {
+			d.setDashboardStatus("Nothing to copy")
+		}
 
 	case APISettingsLoadStartedMsg:
 		d.apiSettings.busy = true
@@ -328,6 +374,7 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	cmds = append(cmds, d.consumeTargetRequest())
+	cmds = append(cmds, d.consumeDiscoveryRequest())
 	cmds = append(cmds, d.consumeAgentRequest())
 	cmds = append(cmds, d.consumeAPISettingsRequest())
 
@@ -341,6 +388,19 @@ func (d *Dashboard) handleGlobalKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return tea.Quit, true
 	case "ctrl+b":
 		d.showBanner = !d.showBanner
+		d.layoutPanels()
+	case "ctrl+m":
+		d.mouseEnabled = !d.mouseEnabled
+		d.dragMode = layoutDragNone
+		if d.mouseEnabled {
+			d.setDashboardStatus("Mouse resize enabled")
+			return tea.EnableMouseCellMotion, true
+		}
+		d.setDashboardStatus("Mouse disabled - select/copy terminal text normally")
+		return tea.DisableMouse, true
+	case "ctrl+y":
+		label, text := d.copyTextForFocus()
+		return copyToClipboardCmd(label, text), true
 	case "ctrl+x":
 		d.stopWork()
 	case "f5", "ctrl+o":
@@ -430,17 +490,82 @@ func (d *Dashboard) routeMouseToFocused(msg tea.MouseMsg) tea.Cmd {
 		d.focus = FocusTarget
 	case msg.X < leftW:
 		d.focus = FocusSystem
-		local.Y = max(0, msg.Y-topH-1)
+		local.Y = max(0, msg.Y-topH)
 	default:
 		if d.workspace == FocusDiscovery {
 			d.focus = FocusDiscovery
 		} else {
 			d.focus = FocusAgent
 		}
-		local.X = max(0, msg.X-leftW-1)
+		local.X = max(0, msg.X-leftW-d.panelGapWidth(leftW))
 	}
 	d.updateFocus()
 	return d.routeToFocused(local)
+}
+
+func (d *Dashboard) handleLayoutMouse(msg tea.MouseMsg) (tea.Cmd, bool) {
+	if d.width <= 0 || d.height <= 0 {
+		return nil, false
+	}
+	leftW, topH := d.panelBounds()
+	switch msg.Action {
+	case tea.MouseActionPress:
+		if msg.Button != tea.MouseButtonLeft {
+			return nil, false
+		}
+		if d.onVerticalDivider(msg.X, leftW) {
+			d.dragMode = layoutDragVertical
+			d.applyVerticalSplit(msg.X)
+			d.setDashboardStatus("Resizing dashboard columns")
+			return nil, true
+		}
+		if d.onHorizontalDivider(msg.X, msg.Y, leftW, topH) {
+			d.dragMode = layoutDragHorizontal
+			d.applyHorizontalSplit(msg.Y)
+			d.setDashboardStatus("Resizing target/system panels")
+			return nil, true
+		}
+	case tea.MouseActionMotion:
+		switch d.dragMode {
+		case layoutDragVertical:
+			d.applyVerticalSplit(msg.X)
+			return nil, true
+		case layoutDragHorizontal:
+			d.applyHorizontalSplit(msg.Y)
+			return nil, true
+		}
+	case tea.MouseActionRelease:
+		if d.dragMode != layoutDragNone {
+			d.dragMode = layoutDragNone
+			d.setDashboardStatus("Dashboard layout ratio saved")
+			return nil, true
+		}
+	}
+	return nil, false
+}
+
+func (d *Dashboard) onVerticalDivider(x, leftW int) bool {
+	gapW := d.panelGapWidth(leftW)
+	return x >= leftW-1 && x <= leftW+max(0, gapW)
+}
+
+func (d *Dashboard) onHorizontalDivider(x, y, leftW, topH int) bool {
+	return x < leftW && y >= topH-1 && y <= topH
+}
+
+func (d *Dashboard) applyVerticalSplit(x int) {
+	minLeftW, minRightW := d.horizontalPanelLimits()
+	leftW := min(max(x, minLeftW), max(minLeftW, d.width-1-minRightW))
+	d.splitH = clampRatio(float64(leftW) / float64(max(1, d.width)))
+	d.layoutPanels()
+}
+
+func (d *Dashboard) applyHorizontalSplit(y int) {
+	bodyH := d.bodyHeight()
+	minTargetH, minSystemH := d.verticalPanelLimits(bodyH)
+	topH := min(max(y, minTargetH), max(minTargetH, bodyH-minSystemH))
+	d.splitV = clampRatio(float64(topH) / float64(max(1, bodyH)))
+	d.layoutPanels()
 }
 
 func (d *Dashboard) moveFocus(delta int) {
@@ -524,6 +649,14 @@ func (d *Dashboard) updateFocus() {
 	}
 }
 
+func (d *Dashboard) setDashboardStatus(status string) {
+	status = strings.TrimSpace(status)
+	if status == "" || d.target == nil {
+		return
+	}
+	d.target.status = status
+}
+
 func (d *Dashboard) consumeTargetRequest() tea.Cmd {
 	if d.target == nil {
 		return nil
@@ -558,6 +691,16 @@ func (d *Dashboard) consumeTargetRequest() tea.Cmd {
 		cmds = append(cmds, d.loadRun(path))
 	}
 	return batchCmds(cmds...)
+}
+
+func (d *Dashboard) consumeDiscoveryRequest() tea.Cmd {
+	if d.discovery == nil || !d.discovery.CopyRequested {
+		return nil
+	}
+	text := d.discovery.PendingCopyText
+	d.discovery.CopyRequested = false
+	d.discovery.PendingCopyText = ""
+	return copyToClipboardCmd("discovery row", text)
 }
 
 func (d *Dashboard) launchScan(cfg ScanConfig) tea.Cmd {
@@ -650,7 +793,7 @@ func (e *scanEmitter) crawl(f core.CrawlFinding) {
 }
 
 func (e *scanEmitter) finding(f core.VulnFinding) {
-	e.latest = progressForFinding(e.latest, f)
+	e.latest.Findings++
 	e.emit(discoveryItemForFinding(f))
 	e.emit(e.latest)
 }
@@ -675,10 +818,6 @@ func (e *scanEmitter) js(pageURL string, js *core.JSAnalysisResult) {
 	for _, scriptURL := range js.ScriptURLs {
 		e.latest.JSFiles++
 		e.emit(DiscoveryItemMsg{Section: "JS Files", Key: scriptURL, Item: scriptURL, Phase: e.latest.Phase})
-	}
-	for _, endpoint := range js.Endpoints {
-		e.latest.Endpoints++
-		e.emit(DiscoveryItemMsg{Section: "Endpoints", Key: endpoint, Item: fmt.Sprintf("[JS] %s", endpoint), Phase: e.latest.Phase})
 	}
 	for _, secret := range js.Secrets {
 		e.latest.Secrets++
@@ -729,6 +868,7 @@ func (e *scanEmitter) callbacks() surface.Callbacks {
 		Param:        e.param,
 		JSAnalysis:   e.js,
 		APIResult:    e.api,
+		APIParameter: e.apiParameter,
 		Subdomain:    e.subdomain,
 	}
 }
@@ -1075,6 +1215,8 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 func normalizeDashboardIntent(intent string) string {
 	intent = strings.ToLower(strings.TrimSpace(intent))
 	switch intent {
+	case "full_surface_scan", "akemi_full_surface_scan", "akemi_full_surface_map", "surface_scan", "full_surface":
+		return "full_surface_map"
 	case "full_surface_map", "api_hunter", "sqli_hunt", "vuln_assessment", "quick_recon":
 		return intent
 	default:
@@ -1483,21 +1625,98 @@ func (d *Dashboard) pendingAIToolTimeout() time.Duration {
 
 func (d *Dashboard) handleToolBridgeEvent(evt toolbridge.Event) []tea.Cmd {
 	cmds := make([]tea.Cmd, 0, 4)
+	phase := firstNonEmpty(evt.Phase, evt.NativeName, evt.ToolName)
 	if evt.Target != nil {
-		cmds = append(cmds, messageCmd(TargetConfigUpdatedMsg{Config: *evt.Target, Phase: firstNonEmpty(evt.Phase, evt.NativeName, evt.ToolName)}))
+		cmds = append(cmds, messageCmd(TargetConfigUpdatedMsg{Config: *evt.Target, Phase: phase}))
 	}
 	for _, item := range evt.Discoveries {
 		cmds = append(cmds, messageCmd(DiscoveryItemMsg{
 			Section: item.Section,
 			Key:     item.Key,
 			Item:    item.Item,
-			Phase:   firstNonEmpty(item.Phase, evt.Phase, evt.NativeName, evt.ToolName),
+			Phase:   firstNonEmpty(item.Phase, phase),
 		}))
+	}
+	if phase != "" {
+		cmds = append(cmds, messageCmd(d.scanProgressForToolEvent(phase, evt.Discoveries)))
 	}
 	if strings.TrimSpace(evt.Error) != "" {
 		cmds = append(cmds, messageCmd(AIToolResultMsg{Text: "tool event error: " + evt.Error}))
 	}
 	return cmds
+}
+
+func (d *Dashboard) scanProgressForToolEvent(phase string, items []toolbridge.DiscoveryItem) ScanProgressMsg {
+	progress := ScanProgressMsg{Phase: phase}
+	if d.discovery != nil {
+		progress.Subdomains = d.discovery.totalSubdomains
+		progress.Ports = d.discovery.totalPorts
+		progress.URLs = d.discovery.totalURLs
+		progress.Endpoints = d.discovery.totalEndpoints
+		progress.Secrets = d.discovery.totalSecrets
+		progress.Params = d.discovery.totalParams
+		progress.JSFiles = d.discovery.totalJSFiles
+		progress.Findings = d.discovery.totalFindings
+	}
+
+	seen := d.discoveryKeysBySection()
+	for _, item := range items {
+		section := strings.TrimSpace(item.Section)
+		if section == "" {
+			continue
+		}
+		key := strings.TrimSpace(item.Key)
+		if key == "" {
+			key = strings.TrimSpace(item.Item)
+		}
+		if key == "" {
+			continue
+		}
+		if seen[section] == nil {
+			seen[section] = make(map[string]struct{})
+		}
+		if _, ok := seen[section][key]; ok {
+			continue
+		}
+		seen[section][key] = struct{}{}
+		switch strings.ToLower(section) {
+		case "subdomains":
+			progress.Subdomains++
+		case "ports":
+			progress.Ports++
+		case "urls":
+			progress.URLs++
+		case "endpoints":
+			progress.Endpoints++
+		case "secrets":
+			progress.Secrets++
+		case "params":
+			progress.Params++
+		case "js files":
+			progress.JSFiles++
+		case "findings":
+			progress.Findings++
+		}
+	}
+	return progress
+}
+
+func (d *Dashboard) discoveryKeysBySection() map[string]map[string]struct{} {
+	out := make(map[string]map[string]struct{})
+	if d.discovery == nil {
+		return out
+	}
+	for _, section := range d.discovery.sections {
+		if section == nil {
+			continue
+		}
+		keys := make(map[string]struct{})
+		for key := range section.Keys {
+			keys[key] = struct{}{}
+		}
+		out[section.Name] = keys
+	}
+	return out
 }
 
 func (d *Dashboard) saveRun(path string) tea.Cmd {
@@ -1630,9 +1849,6 @@ func (d *Dashboard) applyArchiveResultsToDiscovery(results akemiarchive.Results)
 		for _, script := range js.Result.ScriptURLs {
 			d.discovery.AddItemWithKey("JS Files", script, script)
 		}
-		for _, endpoint := range js.Result.Endpoints {
-			d.discovery.AddItemWithKey("Endpoints", endpoint, "[JS] "+endpoint)
-		}
 		for _, secret := range js.Result.Secrets {
 			d.discovery.AddItemWithKey("Secrets", secret.Value+secret.SourceURL, formatSecretFinding(secret))
 		}
@@ -1727,13 +1943,21 @@ func (d *Dashboard) send(msg tea.Msg) {
 	}
 }
 
+func (d *Dashboard) scheduleEventPoll() tea.Cmd {
+	if d.polling {
+		return nil
+	}
+	d.polling = true
+	return d.pollEvents()
+}
+
 func (d *Dashboard) pollEvents() tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case msg := <-d.events:
-			return msg
+			return dashboardPolledMsg{Msg: msg}
 		case <-time.After(150 * time.Millisecond):
-			return AgentTickMsg{}
+			return dashboardPolledMsg{Msg: AgentTickMsg{}}
 		}
 	}
 }
@@ -1743,31 +1967,62 @@ func (d *Dashboard) layoutPanels() {
 		return
 	}
 	leftW, topH := d.panelBounds()
-	rightW := max(24, d.width-leftW-3)
-	bottomH := max(8, d.height-topH-3)
-	bannerReserve := 0
-	if d.showBanner {
-		bannerReserve = 1
-	}
-	leftW = max(24, leftW)
-	topH = max(8, topH)
-	if bottomH > bannerReserve {
-		bottomH -= bannerReserve
-	}
-	rightH := max(8, d.height-2-bannerReserve)
+	bodyH := d.bodyHeight()
+	gapW := d.panelGapWidth(leftW)
+	rightW := max(12, d.width-leftW-gapW)
+	bottomH := max(6, bodyH-topH)
 
-	d.target.SetSize(max(10, leftW-6), max(4, topH-6))
-	d.system.SetSize(max(10, leftW-6), max(4, bottomH-6))
-	d.discovery.SetSize(max(10, rightW-6), max(4, rightH-6))
-	d.agent.SetSize(max(10, rightW-6), max(4, rightH-6))
+	d.target.SetSize(panelContentWidth(leftW), panelContentHeight(topH))
+	d.system.SetSize(panelContentWidth(leftW), panelContentHeight(bottomH))
+	d.discovery.SetSize(panelContentWidth(rightW), panelContentHeight(bodyH))
+	d.agent.SetSize(panelContentWidth(rightW), panelContentHeight(bodyH))
 }
 
 func (d *Dashboard) panelBounds() (int, int) {
 	leftW := int(float64(d.width) * d.splitH)
-	topH := int(float64(d.height) * d.splitV)
-	leftW = min(max(leftW, 28), max(28, d.width-30))
-	topH = min(max(topH, 10), max(10, d.height-10))
+	minLeftW, minRightW := d.horizontalPanelLimits()
+	if d.width > minLeftW+1+minRightW {
+		leftW = min(max(leftW, minLeftW), d.width-1-minRightW)
+	} else {
+		leftW = max(12, d.width/2)
+	}
+
+	bodyH := d.bodyHeight()
+	topH := int(float64(bodyH) * d.splitV)
+	minTargetH, minSystemH := d.verticalPanelLimits(bodyH)
+	if bodyH > minTargetH+minSystemH {
+		topH = min(max(topH, minTargetH), bodyH-minSystemH)
+	} else {
+		topH = max(6, bodyH-minSystemH)
+	}
 	return leftW, topH
+}
+
+func (d *Dashboard) horizontalPanelLimits() (int, int) {
+	return 28, 24
+}
+
+func (d *Dashboard) verticalPanelLimits(bodyH int) (int, int) {
+	minTargetH := 10
+	minSystemH := 6
+	if bodyH < minTargetH+minSystemH {
+		minTargetH = max(6, bodyH-minSystemH)
+	}
+	return minTargetH, minSystemH
+}
+
+func (d *Dashboard) bodyHeight() int {
+	if d.showBanner {
+		return max(1, d.height-1)
+	}
+	return max(1, d.height)
+}
+
+func (d *Dashboard) panelGapWidth(leftW int) int {
+	if d.width-leftW > 24 {
+		return 1
+	}
+	return 0
 }
 
 // View implements tea.Model.
@@ -1780,13 +2035,10 @@ func (d *Dashboard) View() string {
 	}
 
 	leftW, topH := d.panelBounds()
-	bannerReserve := 0
-	if d.showBanner {
-		bannerReserve = 1
-	}
-	rightW := max(24, d.width-leftW-3)
-	rightH := max(8, d.height-2-bannerReserve)
-	bottomH := max(8, d.height-topH-3-bannerReserve)
+	bodyH := d.bodyHeight()
+	gapW := d.panelGapWidth(leftW)
+	rightW := max(12, d.width-leftW-gapW)
+	bottomH := max(6, bodyH-topH)
 
 	rightModel := tea.Model(d.agent)
 	rightFocus := FocusAgent
@@ -1795,11 +2047,16 @@ func (d *Dashboard) View() string {
 		rightFocus = FocusDiscovery
 	}
 
-	targetPanel := d.renderPanel(d.target, leftW-2, topH-2, FocusTarget)
-	systemPanel := d.renderPanel(d.system, leftW-2, bottomH-2, FocusSystem)
-	rightPanel := d.renderPanel(rightModel, rightW-2, rightH-2, rightFocus)
+	targetPanel := d.renderPanel(d.target, leftW, topH, FocusTarget)
+	systemPanel := d.renderPanel(d.system, leftW, bottomH, FocusSystem)
+	rightPanel := d.renderPanel(rightModel, rightW, bodyH, rightFocus)
 	leftColumn := lipgloss.JoinVertical(lipgloss.Top, targetPanel, systemPanel)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightPanel)
+	parts := []string{leftColumn}
+	if gapW > 0 {
+		parts = append(parts, strings.Repeat(" ", gapW))
+	}
+	parts = append(parts, rightPanel)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 
 	if d.showBanner {
 		return lipgloss.JoinVertical(lipgloss.Top, body, d.renderBanner())
@@ -1814,11 +2071,54 @@ func (d *Dashboard) renderPanel(model tea.Model, width, height int, focus FocusM
 	if height < 6 {
 		height = 6
 	}
-	style := PanelStyle.Width(width).Height(height)
+	contentWidth := panelContentWidth(width)
+	contentHeight := panelContentHeight(height)
+	style := PanelStyle
 	if d.focus == focus {
-		style = PanelFocused.Width(width).Height(height)
+		style = PanelFocused
 	}
-	return style.Render(model.View())
+	content := clipBlock(model.View(), contentWidth, contentHeight)
+	return style.Render(content)
+}
+
+func panelContentWidth(width int) int {
+	return max(1, width-6)
+}
+
+func panelContentHeight(height int) int {
+	return max(1, height-4)
+}
+
+func clampRatio(value float64) float64 {
+	if value < 0.05 {
+		return 0.05
+	}
+	if value > 0.95 {
+		return 0.95
+	}
+	return value
+}
+
+func clipBlock(value string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	lines := strings.Split(value, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		if ansi.StringWidth(line) > width {
+			lines[i] = ansi.Truncate(line, width, "")
+		}
+		if pad := width - ansi.StringWidth(lines[i]); pad > 0 {
+			lines[i] += strings.Repeat(" ", pad)
+		}
+	}
+	for len(lines) < height {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (d *Dashboard) renderBanner() string {
@@ -1848,13 +2148,91 @@ func (d *Dashboard) renderBanner() string {
 		DimText.Render("|"),
 		tab(agentLabel, chatActive || historyActive),
 		DimText.Render("|"),
-		HelpText.Render(" Tab clockwise focus | Ctrl+D discovery | Ctrl+A activity | Ctrl+P chat | Ctrl+G history | Ctrl++/Ctrl+N new | F5/Ctrl+O API settings | Ctrl+X stop | Ctrl+C quit "),
+		HelpText.Render(" Tab focus | Drag borders resize | Ctrl+Y copy | Ctrl+M mouse/select | Ctrl+D discovery | Ctrl+A activity | Ctrl+P chat | F5 settings | Ctrl+X stop | Ctrl+C quit "),
 	}
 	line := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	if d.width > 0 && lipgloss.Width(line) > d.width {
+		return ansi.Truncate(line, d.width, "")
+	}
 	if lipgloss.Width(line) < d.width {
 		line += strings.Repeat(" ", d.width-lipgloss.Width(line))
 	}
 	return line
+}
+
+func (d *Dashboard) copyTextForFocus() (string, string) {
+	switch d.focus {
+	case FocusDiscovery:
+		if d.discovery != nil {
+			if item := d.discovery.SelectedText(); strings.TrimSpace(item) != "" {
+				return "discovery row", item
+			}
+			return "discovery panel", plainText(d.discovery.View())
+		}
+	case FocusSystem:
+		if d.system != nil {
+			return "system panel", plainText(d.system.View())
+		}
+	case FocusAgent:
+		if d.agent != nil {
+			return "agent panel", plainText(d.agent.View())
+		}
+	default:
+		if d.target != nil {
+			return "target panel", plainText(d.target.View())
+		}
+	}
+	return "dashboard", plainText(d.View())
+}
+
+func copyToClipboardCmd(label, text string) tea.Cmd {
+	text = strings.TrimSpace(plainText(text))
+	return func() tea.Msg {
+		if text == "" {
+			return clipboardCopyDoneMsg{Label: label}
+		}
+		if err := copyToClipboard(text); err != nil {
+			return clipboardCopyDoneMsg{Label: label, Error: err.Error()}
+		}
+		return clipboardCopyDoneMsg{Label: label, Bytes: len(text)}
+	}
+}
+
+func copyToClipboard(text string) error {
+	var commands [][]string
+	switch runtime.GOOS {
+	case "windows":
+		commands = [][]string{
+			{"clip"},
+			{"powershell", "-NoProfile", "-Command", "Set-Clipboard -Value ([Console]::In.ReadToEnd())"},
+		}
+	case "darwin":
+		commands = [][]string{{"pbcopy"}}
+	default:
+		commands = [][]string{
+			{"wl-copy"},
+			{"xclip", "-selection", "clipboard"},
+			{"xsel", "--clipboard", "--input"},
+		}
+	}
+	var lastErr error
+	for _, spec := range commands {
+		cmd := exec.Command(spec[0], spec[1:]...)
+		cmd.Stdin = strings.NewReader(text)
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no clipboard command configured")
+	}
+	return lastErr
+}
+
+func plainText(value string) string {
+	return strings.TrimRight(ansi.Strip(value), "\n")
 }
 
 type dashboardToolSink struct {
@@ -2168,9 +2546,6 @@ func archiveSectionsFromResults(results akemiarchive.Results) []akemiarchive.Dis
 		for _, script := range js.Result.ScriptURLs {
 			add("JS Files", script, script)
 		}
-		for _, endpoint := range js.Result.Endpoints {
-			add("Endpoints", endpoint, "[JS] "+endpoint)
-		}
 		for _, secret := range js.Result.Secrets {
 			add("Secrets", secret.Value+secret.SourceURL, formatSecretFinding(secret))
 		}
@@ -2192,7 +2567,7 @@ func archiveSectionsFromResults(results akemiarchive.Results) []akemiarchive.Dis
 		add(item.Section, item.Key, item.Item)
 	}
 
-	order := []string{"Subdomains", "Ports", "URLs", "Endpoints", "Secrets", "Params", "JS Files"}
+	order := []string{"Subdomains", "Ports", "URLs", "Endpoints", "Secrets", "Params", "JS Files", "Findings"}
 	sections := make([]akemiarchive.DiscoverySection, 0, len(order))
 	for _, name := range order {
 		items := buckets[name]
@@ -2259,23 +2634,7 @@ func paramCount(params *core.ParamDiscoveryResult) int {
 	return len(params.Params)
 }
 
-func progressForFinding(progress ScanProgressMsg, finding core.VulnFinding) ScanProgressMsg {
-	name := strings.ToLower(finding.Name + " " + finding.Description)
-	switch {
-	case strings.Contains(name, "secret") || strings.Contains(name, "key") || strings.Contains(name, "token"):
-		progress.Secrets++
-	case strings.Contains(name, "api") || strings.Contains(name, "endpoint"):
-		progress.Endpoints++
-	case strings.Contains(name, "param"):
-		progress.Params++
-	case strings.Contains(name, "js") || strings.Contains(name, "script"):
-		progress.JSFiles++
-	}
-	return progress
-}
-
 func discoveryItemForFinding(f core.VulnFinding) DiscoveryItemMsg {
-	name := strings.ToLower(f.Name + " " + f.Description)
 	item := fmt.Sprintf("[%s] %s", strings.ToUpper(firstNonEmpty(f.Severity, "info")), firstNonEmpty(f.Name, f.Description, f.Target))
 	if strings.TrimSpace(f.Target) != "" {
 		item += " -> " + f.Target
@@ -2283,19 +2642,8 @@ func discoveryItemForFinding(f core.VulnFinding) DiscoveryItemMsg {
 	if strings.TrimSpace(f.Evidence) != "" {
 		item += " | " + f.Evidence
 	}
-	key := firstNonEmpty(f.ID, f.Target, f.Name, item)
-	switch {
-	case strings.Contains(name, "secret") || strings.Contains(name, "key") || strings.Contains(name, "token"):
-		return DiscoveryItemMsg{Section: "Secrets", Key: key, Item: item, Phase: "Finding"}
-	case strings.Contains(name, "api") || strings.Contains(name, "endpoint"):
-		return DiscoveryItemMsg{Section: "Endpoints", Key: key, Item: item, Phase: "Finding"}
-	case strings.Contains(name, "param"):
-		return DiscoveryItemMsg{Section: "Params", Key: key, Item: item, Phase: "Finding"}
-	case strings.Contains(name, "js") || strings.Contains(name, "script"):
-		return DiscoveryItemMsg{Section: "JS Files", Key: key, Item: item, Phase: "Finding"}
-	default:
-		return DiscoveryItemMsg{Section: "Endpoints", Key: key, Item: item, Phase: "Finding"}
-	}
+	key := firstNonEmpty(f.ID, strings.Join(nonEmptyList(f.Name, f.Target, f.Evidence), "|"), item)
+	return DiscoveryItemMsg{Section: "Findings", Key: key, Item: item, Phase: "Finding"}
 }
 
 func formatPortResult(p core.PortResult) string {

@@ -42,6 +42,17 @@ func emitDiscoveryItems(ctx context.Context, svc *Services, toolName, phase stri
 	})
 }
 
+func emitProgress(ctx context.Context, svc *Services, toolName, phase string) {
+	if svc == nil || svc.EventSink == nil || strings.TrimSpace(phase) == "" {
+		return
+	}
+	svc.EventSink.Emit(ctx, toolbridge.Event{
+		ToolName:   toolName,
+		NativeName: toolName,
+		Phase:      phase,
+	})
+}
+
 func emitTargetConfig(ctx context.Context, svc *Services, toolName, phase string, target toolbridge.TargetConfig) {
 	if svc == nil || svc.EventSink == nil || emptyTargetConfig(target) {
 		return

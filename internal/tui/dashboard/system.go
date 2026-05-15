@@ -177,6 +177,10 @@ func (sp *SystemPanel) collectMetrics() {
 
 // View renders the system panel.
 func (sp *SystemPanel) View() string {
+	if sp.height < 8 {
+		return sp.compactChartView()
+	}
+
 	var sb strings.Builder
 
 	title := PanelTitle
@@ -208,6 +212,54 @@ func (sp *SystemPanel) View() string {
 	sb.WriteString("\n")
 
 	return sb.String()
+}
+
+func (sp *SystemPanel) compactChartView() string {
+	var sb strings.Builder
+	title := PanelTitle
+	if sp.focused {
+		title = PanelTitleFocused
+	}
+	sb.WriteString(title.Render("System Usage"))
+	if sp.height <= 1 {
+		return sb.String()
+	}
+	sb.WriteString("\n")
+
+	barWidth := max(4, min(8, (sp.width-18)/2))
+	cpu := sp.renderMiniMetric("CPU", sp.cpuPercent, barWidth)
+	mem := sp.renderMiniMetric("MEM", sp.memPercent, barWidth)
+	sb.WriteString(fitCellWidth(cpu+"  "+mem, max(8, sp.width)))
+
+	if sp.height > 2 {
+		sb.WriteString("\n")
+		diskMetric := sp.renderMiniMetric("DSK", sp.diskPercent, barWidth)
+		netMetric := fmt.Sprintf("NET %s^ %sv", formatBytesRate(sp.netSentRate), formatBytesRate(sp.netRecvRate))
+		sb.WriteString(fitCellWidth(diskMetric+"  "+netMetric, max(8, sp.width)))
+	}
+
+	if sp.height > 3 {
+		sb.WriteString("\n")
+		status := fmt.Sprintf("Tasks: %d | Uptime: %s", sp.numGoroutines, sp.uptime.Round(time.Second))
+		sb.WriteString(DimText.Render(fitCellWidth(status, max(8, sp.width))))
+	}
+
+	return sb.String()
+}
+
+func (sp *SystemPanel) renderMiniMetric(label string, value float64, width int) string {
+	filled := int((value / 100) * float64(width))
+	filled = min(max(filled, 0), width)
+	barStyle := BarFull
+	switch {
+	case value >= 80:
+		barStyle = BarCrit
+	case value >= 50:
+		barStyle = BarHigh
+	}
+	bar := barStyle.Render(strings.Repeat("█", filled))
+	track := BarTrack.Render(strings.Repeat("░", width-filled))
+	return fmt.Sprintf("%s %s%s %.0f%%", DimText.Render(label), bar, track, value)
 }
 
 func (sp *SystemPanel) renderBar(label string, value, maxVal float64) string {

@@ -55,11 +55,14 @@ var AllScanOps = []Operation{
 
 // IntentToOps maps a scan intent to the operations it performs.
 var IntentToOps = map[string][]Operation{
-	"quick_recon":      {OpPortScan, OpCrawl, OpHeaderCheck},
-	"full_surface_map": {OpPortScan, OpCrawl, OpHeaderCheck, OpParamMining, OpJSAnalysis, OpAPIDiscovery, OpSubdomainEnum},
-	"api_hunter":       {OpAPIHunt},
-	"sqli_hunt":        {OpSQLiHunt},
-	"vuln_assessment":  {OpVulnAssessment},
+	"quick_recon":             {OpPortScan, OpCrawl, OpHeaderCheck},
+	"full_surface_map":        {OpPortScan, OpCrawl, OpHeaderCheck, OpParamMining, OpJSAnalysis, OpAPIDiscovery, OpSubdomainEnum},
+	"full_surface_scan":       {OpPortScan, OpCrawl, OpHeaderCheck, OpParamMining, OpJSAnalysis, OpAPIDiscovery, OpSubdomainEnum},
+	"akemi_full_surface_map":  {OpPortScan, OpCrawl, OpHeaderCheck, OpParamMining, OpJSAnalysis, OpAPIDiscovery, OpSubdomainEnum},
+	"akemi_full_surface_scan": {OpPortScan, OpCrawl, OpHeaderCheck, OpParamMining, OpJSAnalysis, OpAPIDiscovery, OpSubdomainEnum},
+	"api_hunter":              {OpAPIHunt},
+	"sqli_hunt":               {OpSQLiHunt},
+	"vuln_assessment":         {OpVulnAssessment},
 }
 
 // CompletionRecord marks when an operation was last completed for a target.

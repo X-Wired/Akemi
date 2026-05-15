@@ -48,13 +48,14 @@ var phaseCheckFields = []struct {
 	label   string
 	present func(ScanProgressMsg) bool
 }{
-	{"Subdomains", func(m ScanProgressMsg) bool { return m.Subdomains > 0 }},
-	{"Ports", func(m ScanProgressMsg) bool { return m.Ports > 0 }},
+	{"SUB", func(m ScanProgressMsg) bool { return m.Subdomains > 0 }},
+	{"PRT", func(m ScanProgressMsg) bool { return m.Ports > 0 }},
 	{"URLs", func(m ScanProgressMsg) bool { return m.URLs > 0 }},
-	{"Endpoints", func(m ScanProgressMsg) bool { return m.Endpoints > 0 }},
-	{"Secrets", func(m ScanProgressMsg) bool { return m.Secrets > 0 }},
-	{"Params", func(m ScanProgressMsg) bool { return m.Params > 0 }},
-	{"JS Files", func(m ScanProgressMsg) bool { return m.JSFiles > 0 }},
+	{"API", func(m ScanProgressMsg) bool { return m.Endpoints > 0 }},
+	{"SEC", func(m ScanProgressMsg) bool { return m.Secrets > 0 }},
+	{"PAR", func(m ScanProgressMsg) bool { return m.Params > 0 }},
+	{"JS", func(m ScanProgressMsg) bool { return m.JSFiles > 0 }},
+	{"FND", func(m ScanProgressMsg) bool { return m.Findings > 0 }},
 }
 
 type targetField struct {
@@ -145,6 +146,7 @@ func NewTargetPanel() *TargetPanel {
 func (tp *TargetPanel) SetSize(w, h int) {
 	tp.width = w
 	tp.height = h
+	tp.progressBar.Width = max(8, min(w-8, 40))
 }
 
 // Init implements tea.Model.
@@ -517,7 +519,7 @@ func (tp *TargetPanel) applyToolConfig(msg TargetConfigUpdatedMsg) {
 		tp.fields[fieldProxy].value = cfg.Proxy
 	}
 	if strings.TrimSpace(cfg.Intent) != "" {
-		tp.fields[fieldIntent].value = cfg.Intent
+		tp.fields[fieldIntent].value = normalizeDashboardIntent(cfg.Intent)
 	}
 	if cfg.Depth != nil && *cfg.Depth > 0 {
 		tp.fields[fieldDepth].value = fmt.Sprintf("%d", core.NormalizeCrawlDepth(*cfg.Depth))
@@ -637,6 +639,14 @@ func (tp *TargetPanel) View() string {
 
 	// Fields
 	for i, field := range tp.fields {
+		if i == fieldCaptureAuth && tp.width >= 34 {
+			sb.WriteString(tp.renderButtonPair(fieldCaptureAuth, fieldStart))
+			sb.WriteString("\n")
+			sb.WriteString(tp.renderButtonPair(fieldSave, fieldLoad))
+			sb.WriteString("\n")
+			break
+		}
+
 		prefix := "  "
 		value := field.value
 		displayValue := tp.displayValue(i, value)
@@ -662,13 +672,15 @@ func (tp *TargetPanel) View() string {
 			}
 			sb.WriteString("\n")
 		} else {
-			label := DimText.Render(fmt.Sprintf("%-10s", field.label+":"))
-			valStr := displayValue
+			labelText := fmt.Sprintf("%-10s", field.label+":")
+			label := DimText.Render(labelText)
+			valueWidth := max(4, tp.width-4-len(labelText))
+			valStr := fitCellWidth(displayValue, valueWidth)
 			if i == fieldIntent {
 				valStr = tp.renderIntentSelector()
 			}
 			if value == "" {
-				valStr = DimText.Render(field.placeholder)
+				valStr = DimText.Render(fitCellWidth(field.placeholder, valueWidth))
 			}
 			sb.WriteString(fmt.Sprintf("%s%s %s\n", prefix, label, valStr))
 		}
@@ -714,6 +726,22 @@ func (tp *TargetPanel) View() string {
 	sb.WriteString(HelpText.Render(tp.status))
 
 	return sb.String()
+}
+
+func (tp *TargetPanel) renderButtonPair(left, right int) string {
+	return fmt.Sprintf("  %s %s", tp.renderButtonCell(left), tp.renderButtonCell(right))
+}
+
+func (tp *TargetPanel) renderButtonCell(index int) string {
+	text := tp.fields[index].label
+	style := DimText
+	if index == tp.cursor {
+		style = HighlightRow
+	}
+	if tp.scanning && index == fieldStart {
+		style = WarnText
+	}
+	return style.Render(text)
 }
 
 // Focused returns whether this panel has focus.
@@ -801,6 +829,7 @@ func (tp *TargetPanel) rawIntent() string {
 }
 
 func intentIndex(value string) int {
+	value = normalizeDashboardIntent(value)
 	for i, option := range intentOptions {
 		if option == value {
 			return i

@@ -51,7 +51,11 @@ type DiscoveryPanel struct {
 	totalSecrets    int
 	totalParams     int
 	totalJSFiles    int
+	totalFindings   int
 	phase           string
+
+	CopyRequested   bool
+	PendingCopyText string
 }
 
 // NewDiscoveryPanel creates a new discovery panel.
@@ -66,6 +70,7 @@ func NewDiscoveryPanel() *DiscoveryPanel {
 			{Name: "Secrets", Icon: "SEC", Count: 0, Items: make([]string, 0)},
 			{Name: "Params", Icon: "PAR", Count: 0, Items: make([]string, 0)},
 			{Name: "JS Files", Icon: "JS", Count: 0, Items: make([]string, 0)},
+			{Name: "Findings", Icon: "FND", Count: 0, Items: make([]string, 0)},
 		},
 	}
 	dp.viewport = viewport.New(40, 15)
@@ -109,12 +114,16 @@ func (dp *DiscoveryPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		dp.totalSecrets = msg.Secrets
 		dp.totalParams = msg.Params
 		dp.totalJSFiles = msg.JSFiles
+		dp.totalFindings = msg.Findings
 		dp.phase = msg.Phase
 		dp.syncCounts()
 		dp.updateViewport()
 		return dp, nil
 
 	case DiscoveryItemMsg:
+		if strings.TrimSpace(msg.Phase) != "" {
+			dp.phase = msg.Phase
+		}
 		currentEmpty := len(dp.sections[dp.activeTab].Items) == 0
 		if dp.AddItemWithKey(msg.Section, msg.Key, msg.Item) && currentEmpty {
 			if idx := dp.sectionIndex(msg.Section); idx >= 0 {
@@ -182,16 +191,8 @@ func (dp *DiscoveryPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Findings != nil {
 			for _, f := range msg.Findings {
-				// Route findings to appropriate sections based on name/severity
-				if strings.Contains(f.Name, "Endpoint") || strings.Contains(f.Name, "API") {
-					dp.AddItemWithKey("Endpoints", f.Target, f.Target)
-				} else if strings.Contains(f.Name, "Secret") || strings.Contains(f.Name, "Key") {
-					dp.AddItemWithKey("Secrets", f.Evidence, f.Evidence)
-				} else if strings.Contains(f.Name, "Parameter") || strings.Contains(f.Name, "Param") {
-					dp.AddItemWithKey("Params", f.Name, f.Name)
-				} else if strings.Contains(f.Name, "JS") || strings.Contains(f.Name, "Script") {
-					dp.AddItemWithKey("JS Files", f.Target, f.Target)
-				}
+				item := discoveryItemForFinding(f)
+				dp.AddItemWithKey(item.Section, item.Key, item.Item)
 			}
 		}
 		dp.refreshTotalsFromSections()
@@ -283,16 +284,20 @@ func (dp *DiscoveryPanel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		dp.scrollY = 0
 		dp.updateViewport()
 	case "enter":
-		// Toggle detail popover for the currently selected item
 		items := dp.currentItems()
 		if dp.detailMode {
-			dp.detailMode = false
-			dp.detailItem = ""
-			dp.detailSection = ""
+			dp.CopyRequested = true
+			dp.PendingCopyText = dp.detailItem
 		} else if dp.scrollY < len(items) && len(items) > 0 {
 			dp.detailMode = true
 			dp.detailItem = items[dp.scrollY]
 			dp.detailSection = dp.sections[dp.activeTab].Name
+		}
+		return dp, nil
+	case "c", "y":
+		if item := dp.SelectedText(); strings.TrimSpace(item) != "" {
+			dp.CopyRequested = true
+			dp.PendingCopyText = item
 		}
 		return dp, nil
 	case "esc":
@@ -384,6 +389,7 @@ func (dp *DiscoveryPanel) syncCounts() {
 	dp.sections[4].Count = dp.totalSecrets
 	dp.sections[5].Count = dp.totalParams
 	dp.sections[6].Count = dp.totalJSFiles
+	dp.sections[7].Count = dp.totalFindings
 }
 
 // currentItems returns the active item list (filtered or full).
@@ -452,14 +458,14 @@ func (dp *DiscoveryPanel) updateViewport() {
 		}
 		prefix := "  "
 		style := DimText
-		displayText := item
+		displayText := fitCellWidth(item, max(10, dp.viewport.Width-4))
 		if i == dp.scrollY {
 			prefix = AccentText.Render("> ")
 			style = AccentText
 		}
 		// Highlight matches when filtering
 		if dp.filterMode && dp.filterInput != "" {
-			displayText = HighlightSubstring(item, dp.filterInput)
+			displayText = HighlightSubstring(displayText, dp.filterInput)
 		}
 		sb.WriteString(style.Render(fmt.Sprintf("%s%s\n", prefix, displayText)))
 	}
@@ -568,6 +574,20 @@ func (dp *DiscoveryPanel) Focus(v bool) {
 	dp.focused = v
 }
 
+func (dp *DiscoveryPanel) SelectedText() string {
+	if dp == nil {
+		return ""
+	}
+	if strings.TrimSpace(dp.detailItem) != "" {
+		return dp.detailItem
+	}
+	items := dp.currentItems()
+	if dp.scrollY >= 0 && dp.scrollY < len(items) {
+		return items[dp.scrollY]
+	}
+	return ""
+}
+
 // AddItem adds an item to a specific section.
 func (dp *DiscoveryPanel) AddItem(sectionName string, item string) {
 	dp.AddItemWithKey(sectionName, item, item)
@@ -618,6 +638,8 @@ func (dp *DiscoveryPanel) beginScan() {
 	dp.detailMode = false
 	dp.detailItem = ""
 	dp.detailSection = ""
+	dp.CopyRequested = false
+	dp.PendingCopyText = ""
 	dp.phase = "Starting"
 	dp.refreshTotalsFromSections()
 	dp.updateViewport()
@@ -639,6 +661,7 @@ func (dp *DiscoveryPanel) reset() {
 	dp.totalSecrets = 0
 	dp.totalParams = 0
 	dp.totalJSFiles = 0
+	dp.totalFindings = 0
 	dp.activeTab = 0
 	dp.scrollY = 0
 	dp.filterMode = false
@@ -647,6 +670,8 @@ func (dp *DiscoveryPanel) reset() {
 	dp.detailMode = false
 	dp.detailItem = ""
 	dp.detailSection = ""
+	dp.CopyRequested = false
+	dp.PendingCopyText = ""
 	dp.phase = ""
 	dp.updateViewport()
 }
@@ -668,6 +693,27 @@ func (dp *DiscoveryPanel) refreshTotalsFromSections() {
 	dp.totalSecrets = len(dp.sections[4].Items)
 	dp.totalParams = len(dp.sections[5].Items)
 	dp.totalJSFiles = len(dp.sections[6].Items)
+	dp.totalFindings = len(dp.sections[7].Items)
+}
+
+func fitCellWidth(value string, width int) string {
+	value = strings.TrimSpace(value)
+	if width <= 0 || lipgloss.Width(value) <= width {
+		return value
+	}
+	if width <= 3 {
+		return strings.Repeat(".", max(0, width))
+	}
+	var out strings.Builder
+	limit := width - 3
+	for _, r := range value {
+		next := out.String() + string(r)
+		if lipgloss.Width(next) > limit {
+			break
+		}
+		out.WriteRune(r)
+	}
+	return out.String() + "..."
 }
 
 // Summary returns a one-line summary of all discovery counts.

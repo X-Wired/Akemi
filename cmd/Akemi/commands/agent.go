@@ -34,6 +34,7 @@ and reports findings in real-time.
 
 Available intents:
   full_surface_map    Complete attack surface discovery
+  full_surface_scan   Alias for full_surface_map
   quick_recon         Fast initial triage
   sqli_hunt           Focused SQL injection discovery
   vuln_assessment     Full vulnerability scan with exploit correlation
@@ -48,7 +49,7 @@ Examples:
 	}
 
 	cmd.Flags().StringP("target", "t", "", "Target URL, domain, or IP (required)")
-	cmd.Flags().String("intent", "quick_recon", "Agent intent: quick_recon, full_surface_map, sqli_hunt, vuln_assessment, api_review")
+	cmd.Flags().String("intent", "quick_recon", "Agent intent: quick_recon, full_surface_map/full_surface_scan, sqli_hunt, vuln_assessment, api_review")
 	cmd.Flags().String("description", "", "Custom description of the goal (optional)")
 	cmd.Flags().Int("concurrency", 5, "Maximum parallel tasks")
 	cmd.Flags().Int("max-rpm", 300, "Maximum requests per minute per target")

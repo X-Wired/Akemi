@@ -119,6 +119,9 @@ func (p *Planner) registerStandardTemplates() {
 			{Tool: "akemi_full_surface_map", Priority: 1},
 		},
 	}
+	p.templates["full_surface_scan"] = p.templates["full_surface_map"]
+	p.templates["akemi_full_surface_scan"] = p.templates["full_surface_map"]
+	p.templates["akemi_full_surface_map"] = p.templates["full_surface_map"]
 
 	p.templates["quick_recon"] = &PlanTemplate{
 		Name:        "Quick Reconnaissance",

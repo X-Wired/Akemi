@@ -60,6 +60,9 @@ func handleFullSurfaceMap(ctx context.Context, args map[string]interface{}, svc 
 		Prober:        svc.Prober,
 		SubEnumerator: svc.SubEnumerator,
 	}, cfg, surface.Callbacks{
+		Progress: func(stage string) {
+			emitProgress(ctx, svc, "akemi_full_surface_map", stage)
+		},
 		Port: func(port core.PortResult) {
 			emitDiscoveryItems(ctx, svc, "akemi_full_surface_map", "Port scanning", portDiscoveryItems([]core.PortResult{port})...)
 		},
@@ -78,6 +81,9 @@ func handleFullSurfaceMap(ctx context.Context, args map[string]interface{}, svc 
 		},
 		APIResult: func(apiResult *core.APISurfaceResult) {
 			emitDiscoveryItems(ctx, svc, "akemi_full_surface_map", "Discovering API surface", apiDiscoveryItems(apiResult)...)
+		},
+		APIParameter: func(param core.APIParameterFinding) {
+			emitDiscoveryItems(ctx, svc, "akemi_full_surface_map", "Discovering API surface", apiParameterDiscoveryItems([]core.APIParameterFinding{param})...)
 		},
 		Subdomain: func(subdomain core.SubdomainResult) {
 			emitDiscoveryItems(ctx, svc, "akemi_full_surface_map", "Enumerating subdomains", subdomainDiscoveryItems([]core.SubdomainResult{subdomain})...)

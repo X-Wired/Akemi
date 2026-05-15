@@ -56,6 +56,7 @@ type ScanProgressMsg struct {
 	Secrets    int
 	Params     int
 	JSFiles    int
+	Findings   int
 	Phase      string // current phase name
 }
 

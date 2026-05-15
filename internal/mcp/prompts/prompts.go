@@ -69,7 +69,7 @@ func (pp *PromptProvider) registerAll() {
 							Text: fmt.Sprintf(`You are performing a comprehensive attack surface mapping of %s. Follow this methodology:
 
 ## Step 1: Full Surface Mapping
-Use akemi_full_surface_map to run the dedicated dashboard workflow. It performs port scanning, managed crawling, header/tech checks, parameter mining, JavaScript analysis, API discovery, and subdomain enumeration in one tool call.
+Use akemi_full_surface_map or its akemi_full_surface_scan alias to run the dedicated dashboard workflow. It performs managed crawling, port scanning, header/tech checks, parameter mining, JavaScript analysis, API discovery, and subdomain enumeration in one tool call.
 
 ## Step 2: Vulnerability Assessment
 Use akemi_list_templates to see what vulnerability classes can be tested.
