@@ -117,6 +117,7 @@ type clientSurfaceAnalysis struct {
 	APIEndpoints    []APIEndpointFinding
 	APISpecs        []APISpecFinding
 	ParamDetails    map[string]RichParamDetail
+	KeywordMatches  map[string][]string
 }
 
 type sitemapURLSet struct {
@@ -960,8 +961,9 @@ func extractVersion(rawPath string) string {
 
 func newClientSurfaceAnalysis() *clientSurfaceAnalysis {
 	return &clientSurfaceAnalysis{
-		LegacySecrets: make(map[string][]string),
-		ParamDetails:  make(map[string]RichParamDetail),
+		LegacySecrets:  make(map[string][]string),
+		ParamDetails:   make(map[string]RichParamDetail),
+		KeywordMatches: make(map[string][]string),
 	}
 }
 

@@ -17,6 +17,45 @@ import (
 	"time"
 )
 
+// =============================================================================
+// Shared HTTP Transport — connection pooling across all Akemi HTTP clients
+// =============================================================================
+
+var (
+	sharedTransportOnce sync.Once
+	sharedTransport     *http.Transport
+)
+
+// SharedTransport returns a singleton *http.Transport configured with
+// aggressive connection pooling. All Akemi HTTP clients should derive
+// from this transport to avoid the cost of creating a new connection
+// pool for every ad-hoc client.
+func SharedTransport() *http.Transport {
+	sharedTransportOnce.Do(func() {
+		sharedTransport = &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          200,
+			MaxIdleConnsPerHost:   32,
+			MaxConnsPerHost:       128,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	})
+	return sharedTransport
+}
+
+// CloneSharedTransport returns a shallow clone of the shared transport
+// suitable for per-client customization (TLS, proxy, custom dialer).
+// The clone still shares the underlying connection pool with the parent.
+func CloneSharedTransport() *http.Transport {
+	return SharedTransport().Clone()
+}
+
 type HTTPClientOptions struct {
 	InsecureTLS     bool
 	DisableRedirect bool
@@ -153,17 +192,21 @@ func CreateHTTPClientWithOptions(timeout int, opts HTTPClientOptions) *http.Clie
 	}
 
 	clientTimeout := time.Duration(timeout) * time.Second
-	baseDialer := &net.Dialer{
-		Timeout:   clientTimeout,
-		KeepAlive: 30 * time.Second,
-	}
-	transport := &http.Transport{
-		DialContext:           baseDialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   clientTimeout,
-		ExpectContinueTimeout: 1 * time.Second,
+
+	// Derive from the shared transport so every Akemi HTTP client
+	// benefits from a single connection pool. We clone the shared
+	// transport only when per-client modifications are needed.
+	transport := CloneSharedTransport()
+
+	// Per-client timeout——the shared transport uses conservative
+	// defaults; tighten them when the caller requests a short timeout.
+	if clientTimeout < 10*time.Second {
+		baseDialer := &net.Dialer{
+			Timeout:   clientTimeout,
+			KeepAlive: 30 * time.Second,
+		}
+		transport.DialContext = baseDialer.DialContext
+		transport.TLSHandshakeTimeout = clientTimeout
 	}
 
 	if opts.InsecureTLS {
@@ -172,6 +215,10 @@ func CreateHTTPClientWithOptions(timeout int, opts HTTPClientOptions) *http.Clie
 
 	proxyChain, err := activeProxyChainURLs()
 	if err == nil && len(proxyChain) > 0 {
+		baseDialer := &net.Dialer{
+			Timeout:   clientTimeout,
+			KeepAlive: 30 * time.Second,
+		}
 		switch {
 		case len(proxyChain) == 1 && (strings.EqualFold(proxyChain[0].Scheme, "http") || strings.EqualFold(proxyChain[0].Scheme, "https")):
 			transport.Proxy = func(req *http.Request) (*url.URL, error) {

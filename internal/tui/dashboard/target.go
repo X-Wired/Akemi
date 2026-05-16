@@ -658,6 +658,17 @@ func (tp *TargetPanel) View() string {
 			}
 		}
 
+		// Show the URL limit alongside the depth value (skip while editing)
+		if i == fieldDepth && value != "" && !(tp.inputMode && i == tp.cursor) {
+			depth := atoi(value, 2)
+			limit := core.CrawlURLLimitForDepth(depth)
+			if limit > 0 {
+				displayValue = fmt.Sprintf("%s (%d URLs)", displayValue, limit)
+			} else {
+				displayValue = fmt.Sprintf("%s (unlimited)", displayValue)
+			}
+		}
+
 		if isButtonField(i) {
 			// Render as button
 			btnStyle := DimText

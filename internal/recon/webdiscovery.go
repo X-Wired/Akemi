@@ -1055,6 +1055,71 @@ func isDifferentResponse(baseStatus, baseSize int, baseBody string, newStatus, n
 // It combines URL query mining, JS extraction (external files + inline blocks),
 // form input mining, JSON response key extraction, path param detection,
 // and optional active brute-force into a single concurrent pass.
+// MinePageParams performs per-page, zero-crawl parameter discovery on a single URL.
+// It fetches the page and extracts query params, form inputs, JSON keys,
+// JS-embedded parameters, secrets, API endpoints, and config resources.
+// This is the workhorse behind the Crawl→Mine streaming pipeline (Phase 2.2).
+func MinePageParams(ctx context.Context, pageURL string, cfg MiningConfig, client *http.Client) *clientSurfaceAnalysis {
+	if cfg.SuspiciousPattern == nil {
+		cfg.SuspiciousPattern = regexp.MustCompile(
+			`(?i)(id|page|user|token|key|pass|debug|cmd|exec|file|path|url|redirect|search|query|action)`,
+		)
+	}
+	result := newClientSurfaceAnalysis()
+	pageURL = core.EnsureProtocol(pageURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
+	if err != nil {
+		return result
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; AlemiScanner/2.0)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return result
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return result
+	}
+	bodyStr := string(bodyBytes)
+	contentType := resp.Header.Get("Content-Type")
+	if parsedURL, err := url.Parse(pageURL); err == nil {
+		for key, values := range parsedURL.Query() {
+			result.ParamDetails[key] = RichParamDetail{
+				Values: values, Sources: []string{pageURL},
+				SourceTypes:  []ParamSource{SourceURLQuery},
+				InferredType: inferTypeFromValues(values),
+				Suspicious:   cfg.SuspiciousPattern.MatchString(key),
+			}
+		}
+	}
+	if cfg.MineKeywords && len(cfg.Keywords) > 0 {
+		result.KeywordMatches = ScanForKeywords(bodyStr, cfg.Keywords)
+	}
+	if cfg.MineForms && strings.Contains(contentType, "text/html") {
+		for k, v := range mineFormInputs(pageURL, bodyStr) {
+			mergeRichParam(result.ParamDetails, k, v)
+		}
+	}
+	if cfg.MineJSONResponses && strings.Contains(contentType, "application/json") {
+		for k, v := range mineJSONResponse(pageURL, bodyBytes) {
+			mergeRichParam(result.ParamDetails, k, v)
+		}
+		result.SecretFindings = append(result.SecretFindings, detectSecretFindings(bodyStr, pageURL, "json_response")...)
+	}
+	if cfg.MineJS && strings.Contains(contentType, "text/html") {
+		analysis := analyzeHTMLClientSurface(pageURL, bodyStr, client)
+		for k, v := range analysis.ParamDetails {
+			mergeRichParam(result.ParamDetails, k, v)
+		}
+		result.SecretFindings = append(result.SecretFindings, analysis.SecretFindings...)
+		result.ConfigResources = append(result.ConfigResources, analysis.ConfigResources...)
+		result.APIEndpoints = append(result.APIEndpoints, analysis.APIEndpoints...)
+		result.APISpecs = append(result.APISpecs, analysis.APISpecs...)
+	}
+	return result
+}
+
 func EnhancedDiscoverParams(rawURL string, cfg MiningConfig) (*DiscoveryResult, error) {
 	rawURL = core.EnsureProtocol(rawURL)
 
@@ -1131,101 +1196,27 @@ func EnhancedDiscoverParams(rawURL string, cfg MiningConfig) (*DiscoveryResult, 
 		wg.Add(1)
 		go func(pageURL string) {
 			defer wg.Done()
-			pageURL = core.EnsureProtocol(pageURL)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
-			if err != nil {
-				return
-			}
-			req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; AlemiScanner/2.0)")
-
-			resp, err := client.Do(req)
-			if err != nil {
-				log.Printf("[ParamMiner] Error fetching %s: %v", pageURL, err)
-				return
-			}
-			defer resp.Body.Close()
-
-			bodyBytes, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return
-			}
-			bodyStr := string(bodyBytes)
-			contentType := resp.Header.Get("Content-Type")
-
-			local := make(map[string]RichParamDetail)
-			var localSecrets []SecretFinding
-			var localConfigs []string
-			var localAPIs []APIEndpointFinding
-			var localSpecs []APISpecFinding
-
-			// ── Step 0: Keyword Scanning ──────────────────────
-			if cfg.MineKeywords && len(cfg.Keywords) > 0 {
-				matches := ScanForKeywords(bodyStr, cfg.Keywords)
-				mu.Lock()
-				for k, v := range matches {
-					keywordAggregated[k] = append(keywordAggregated[k], v...)
-				}
-				mu.Unlock()
-			}
-
-			// ── Step 3: URL Query Params ───────────────────────
-			if parsedURL, err := url.Parse(pageURL); err == nil {
-				for key, values := range parsedURL.Query() {
-					detail := RichParamDetail{
-						Values:       values,
-						Sources:      []string{pageURL},
-						SourceTypes:  []ParamSource{SourceURLQuery},
-						InferredType: inferTypeFromValues(values),
-						Suspicious:   cfg.SuspiciousPattern.MatchString(key),
-					}
-					mergeRichParam(local, key, detail)
-				}
-			}
-
-			// ── Step 4: Form Input Names ───────────────────────
-			if cfg.MineForms && strings.Contains(contentType, "text/html") {
-				for k, v := range mineFormInputs(pageURL, bodyStr) {
-					mergeRichParam(local, k, v)
-				}
-			}
-
-			// ── Step 5: JSON Response Key Extraction ───────────
-			if cfg.MineJSONResponses && strings.Contains(contentType, "application/json") {
-				for k, v := range mineJSONResponse(pageURL, bodyBytes) {
-					mergeRichParam(local, k, v)
-				}
-				localSecrets = append(localSecrets, detectSecretFindings(bodyStr, pageURL, "json_response")...)
-			}
-
-			// ── Step 6: JS File Mining ─────────────────────────
-			if cfg.MineJS && strings.Contains(contentType, "text/html") {
-				analysis := analyzeHTMLClientSurface(pageURL, bodyStr, client)
-				for k, v := range analysis.ParamDetails {
-					mergeRichParam(local, k, v)
-				}
-				localSecrets = append(localSecrets, analysis.SecretFindings...)
-				localConfigs = append(localConfigs, analysis.ConfigResources...)
-				localAPIs = append(localAPIs, analysis.APIEndpoints...)
-				localSpecs = append(localSpecs, analysis.APISpecs...)
-			}
+			analysis := MinePageParams(ctx, pageURL, cfg, client)
 
 			mu.Lock()
-			for k, v := range local {
+			for k, v := range analysis.ParamDetails {
 				mergeRichParam(aggregated, k, v)
 			}
-			for _, finding := range localSecrets {
+			for _, finding := range analysis.SecretFindings {
 				if !hasSecretFinding(secretFindings, finding) {
 					secretFindings = append(secretFindings, finding)
 				}
 			}
-			configResources = mergeStringListUnique(configResources, localConfigs)
-			apiEndpoints = mergeAPIEndpointList(apiEndpoints, localAPIs)
-			apiSpecs = mergeAPISpecList(apiSpecs, localSpecs)
+			for k, v := range analysis.KeywordMatches {
+				keywordAggregated[k] = append(keywordAggregated[k], v...)
+			}
+			configResources = mergeStringListUnique(configResources, analysis.ConfigResources)
+			apiEndpoints = mergeAPIEndpointList(apiEndpoints, analysis.APIEndpoints)
+			apiSpecs = mergeAPISpecList(apiSpecs, analysis.APISpecs)
 			mu.Unlock()
-
 		}(u)
 	}
 

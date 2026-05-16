@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	core "Akemi/internal/core"
@@ -27,6 +28,111 @@ func NewDiscoveryService(logger *slog.Logger) *DiscoveryService {
 // Crawl discovers URLs by crawling from a start URL.
 func (s *DiscoveryService) Crawl(ctx context.Context, startURL string, maxDepth int) ([]core.CrawlFinding, error) {
 	return s.CrawlWithCallback(ctx, startURL, maxDepth, nil)
+}
+
+// CrawlAndMine streams crawl discoveries directly into parameter mining.
+// As the crawler discovers each URL it is immediately farmed out to a pool
+// of MinePageParams workers. This eliminates the double-crawl problem: when
+// --crawl and --params are used together the crawl happens once and param
+// mining runs concurrently on the live URL stream (Phase 2.2 optimization).
+func (s *DiscoveryService) CrawlAndMine(ctx context.Context, startURL string, maxDepth int, miningCfg core.MiningConfig) ([]core.CrawlFinding, *core.ParamDiscoveryResult, error) {
+	defer core.LogDuration(ctx, "Discoverer.CrawlAndMine", time.Now())
+	maxDepth = core.NormalizeCrawlDepth(maxDepth)
+
+	s.logger.InfoContext(ctx, "starting crawl-and-mine pipeline",
+		slog.String("url", startURL),
+		slog.Int("max_depth", maxDepth),
+	)
+
+	reconCfg := recon.MiningConfig{
+		Depth:             miningCfg.Depth,
+		Threads:           miningCfg.Threads,
+		Timeout:           miningCfg.Timeout,
+		MineJS:            miningCfg.MineJS,
+		MineForms:         miningCfg.MineForms,
+		MineJSONResponses: miningCfg.MineJSON,
+		MinePathParams:    miningCfg.MinePath,
+		ActiveBrute:       miningCfg.ActiveBrute,
+		Keywords:          miningCfg.Keywords,
+		MineKeywords:      miningCfg.MineKeywords,
+		Quiet:             true,
+	}
+	if reconCfg.Threads <= 0 {
+		reconCfg.Threads = 10
+	}
+	if reconCfg.Timeout <= 0 {
+		reconCfg.Timeout = 10
+	}
+
+	// Buffered channel: crawler → mining workers
+	urlCh := make(chan string, 200)
+	client := core.CreateHTTPClient(reconCfg.Timeout)
+
+	var mu sync.Mutex
+	aggregated := make(map[string]core.ParamDetail)
+
+	// Start mining workers
+	workerCount := reconCfg.Threads
+	var workerWg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			for pageURL := range urlCh {
+				if ctx.Err() != nil {
+					return
+				}
+				analysis := recon.MinePageParams(ctx, pageURL, reconCfg, client)
+				if len(analysis.ParamDetails) == 0 {
+					continue
+				}
+				mu.Lock()
+				for name, detail := range analysis.ParamDetails {
+					if existing, ok := aggregated[name]; ok {
+						existing.Sources = append(existing.Sources, detail.Sources...)
+						existing.Examples = append(existing.Examples, detail.Values...)
+						aggregated[name] = existing
+					} else {
+						aggregated[name] = core.ParamDetail{
+							Name:     name,
+							Sources:  detail.Sources,
+							Examples: detail.Values,
+						}
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+
+	// Start crawler — feeds URLs into channel as discovered
+	crawlFindings, crawlErr := s.CrawlWithCallback(ctx, startURL, maxDepth, func(f core.CrawlFinding) {
+		if f.StatusCode >= 200 && f.StatusCode < 400 {
+			select {
+			case urlCh <- f.URL:
+			case <-ctx.Done():
+			default:
+				// Channel full — drop (rare with 200-buf)
+			}
+		}
+	})
+
+	// Signal workers: no more URLs
+	close(urlCh)
+	workerWg.Wait()
+
+	paramResult := &core.ParamDiscoveryResult{
+		Params:     aggregated,
+		TotalCount: len(aggregated),
+	}
+
+	s.logger.InfoContext(ctx, "crawl-and-mine pipeline completed",
+		slog.Int("urls_crawled", len(crawlFindings)),
+		slog.Int("params_found", len(aggregated)),
+	)
+
+	return crawlFindings, paramResult, crawlErr
 }
 
 // CrawlWithCallback discovers URLs and reports each crawl result as it arrives.

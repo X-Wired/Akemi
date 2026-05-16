@@ -4,17 +4,15 @@ import (
 	core "Akemi/internal/core"
 	proxy "Akemi/internal/platform/proxy"
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
-	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // PortScanResult holds details of an open port.
@@ -237,22 +235,33 @@ func isWindows() bool {
 	return os.PathSeparator == '\\' && os.PathListSeparator == ';'
 }
 
+// extractHost parses a target string that may be a URL and returns the bare
+// hostname. If the string is already a plain host or IP, it is returned as-is.
+func extractHost(target string) string {
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		if parsed, err := url.Parse(target); err == nil && parsed.Host != "" {
+			return parsed.Hostname()
+		}
+	}
+	return target
+}
+
 // Run executes the port scan by invoking the Rust Akemi-Spear binary.
-// Falls back to the legacy Go scanner if the binary is not found.
 func (s *PortScanner) Run() (*PortScanSummary, error) {
+	// Normalise the host: strip URL scheme so the Rust scanner receives a
+	// bare hostname or IP.
+	s.Host = extractHost(s.Host)
+
 	if proxy.ProxyEnabled() {
 		if s.SynMode {
-			s.println("[proxy] SYN scan is incompatible with proxy transport. Falling back to connect scan.")
+			return nil, fmt.Errorf("SYN scan is incompatible with proxy transport; disable the proxy or use connect scan")
 		}
-		s.printf("[proxy] Port scan routed via %s. Using proxy-compatible legacy scanner.\n", proxy.ActiveProxyDisplay())
-		return s.runLegacy()
+		return nil, fmt.Errorf("port scanning is not available through a proxy (%s); unset the proxy and retry", proxy.ActiveProxyDisplay())
 	}
 
 	binPath := findScannerBinary()
 	if binPath == "" {
-		s.println("[!] Akemi-Spear binary not found. Run: cd Akemi-Spear && cargo build --release")
-		s.println("[!] Falling back to legacy Go scanner...")
-		return s.runLegacy()
+		return nil, fmt.Errorf("Akemi-Spear binary not found; build it with: cd Akemi-Spear && cargo build --release")
 	}
 
 	if s.NoPorts {
@@ -342,18 +351,10 @@ func (s *PortScanner) Run() (*PortScanSummary, error) {
 	if err := cmd.Wait(); err != nil {
 		<-stderrDone
 		stderrText := strings.TrimSpace(stderrBuf.String())
-		if !s.NoPorts {
-			if stderrText != "" {
-				s.printf("[!] Akemi-Spear failed: %s\n", stderrText)
-			}
-			s.println("[!] Falling back to legacy Go scanner...")
-			summary, fallbackErr := s.runLegacy()
-			if fallbackErr == nil {
-				return summary, nil
-			}
-			return nil, fmt.Errorf("Akemi-Spear exited with error: %w; stderr: %s; legacy fallback failed: %v", err, stderrText, fallbackErr)
+		if stderrText != "" {
+			return nil, fmt.Errorf("Akemi-Spear failed: %s", stderrText)
 		}
-		return nil, fmt.Errorf("Akemi-Spear exited with error: %w; stderr: %s", err, stderrText)
+		return nil, fmt.Errorf("Akemi-Spear exited with error: %w", err)
 	}
 	<-stderrDone
 
@@ -431,87 +432,5 @@ func (s *PortScanner) Run() (*PortScanSummary, error) {
 	s.printf("[*] Port scan completed via Rust engine (%s mode). Found %d open ports in %.2fs.\n",
 		result.ScanMode, len(result.OpenPorts), float64(result.ScanTimeMs)/1000.0)
 
-	return summary, nil
-}
-
-// runLegacy executes the old Go-based port scanner as a fallback.
-func (s *PortScanner) runLegacy() (*PortScanSummary, error) {
-	summary := &PortScanSummary{
-		Hostname: s.Host,
-	}
-	proxyMode := proxy.ProxyEnabled()
-	targetHost := s.Host
-
-	if !proxyMode {
-		// Resolve IPs only in direct mode to avoid bypassing the proxy.
-		ips, err := net.LookupHost(s.Host)
-		if err == nil {
-			summary.IPs = ips
-			targetHost = summary.IPs[0]
-		} else {
-			if net.ParseIP(s.Host) != nil {
-				summary.IPs = []string{s.Host}
-				targetHost = s.Host
-			} else {
-				return nil, fmt.Errorf("could not resolve host %s: %v", s.Host, err)
-			}
-		}
-	} else if net.ParseIP(s.Host) != nil {
-		summary.IPs = []string{s.Host}
-	}
-
-	s.println("[!] Legacy Go scanner: basic connect scan only (no rate limiting, no SYN mode)")
-	if len(summary.IPs) > 0 {
-		s.printf("[*] Starting Port Scan on %s (%s)\n", s.Host, summary.IPs[0])
-	} else {
-		s.printf("[*] Starting Port Scan on %s (via proxy)\n", s.Host)
-	}
-	s.printf("[*] Scanning %d ports...\n", len(s.Ports))
-
-	// Simple connect scan fallback — each port in a basic goroutine
-	// This is intentionally minimal to encourage using the Rust engine
-	type result struct {
-		port int
-		open bool
-	}
-
-	results := make(chan result, len(s.Ports))
-	sem := make(chan struct{}, s.Threads)
-
-	for _, port := range s.Ports {
-		go func(p int) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			addr := net.JoinHostPort(targetHost, strconv.Itoa(p))
-			timeout := 3 * time.Second
-			if s.TimeoutS > 0 {
-				timeout = time.Duration(s.TimeoutS) * time.Second
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			defer cancel()
-			conn, err := proxy.DialContextWithProxy(ctx, "tcp", addr)
-			if err == nil {
-				conn.Close()
-				results <- result{port: p, open: true}
-			} else {
-				results <- result{port: p, open: false}
-			}
-		}(port)
-	}
-
-	for range s.Ports {
-		r := <-results
-		if r.open {
-			res := PortScanResult{
-				Port:  r.port,
-				State: "open",
-			}
-			summary.Results = append(summary.Results, res)
-			s.printf("   [+] Port %-5d open\n", r.port)
-		}
-	}
-
-	s.printf("[*] Port scan completed. Found %d open ports.\n", len(summary.Results))
 	return summary, nil
 }

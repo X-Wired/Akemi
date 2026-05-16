@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	akemiarchive "Akemi/internal/archive"
@@ -19,6 +20,7 @@ import (
 	"Akemi/internal/tui/dashboard"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 // Services holds all initialized service instances.
@@ -164,6 +166,28 @@ func getServices() *Services {
 	return svc
 }
 
+// =============================================================================
+// runRoot — parallelized + pipeline-optimized execution
+// =============================================================================
+//
+// Phase 1.1: independent operations run concurrently via errgroup.
+// Phase 2.2: --crawl + --params use the streaming CrawlAndMine pipeline
+//            (single crawl, live param mining on discovered URLs).
+
+// runResult bundles all the results produced by a concurrent scan phase.
+type runResult struct {
+	subResults   []core.SubdomainResult
+	subErr       error
+	crawlResults []core.CrawlFinding
+	crawlErr     error
+	jsResult     *core.JSAnalysisResult
+	jsErr        error
+	paramsResult *core.ParamDiscoveryResult
+	paramsErr    error
+	vulnResults  []core.VulnFinding
+	vulnErr      error
+}
+
 // runRoot provides the original monolithic behavior when no subcommand is given.
 func runRoot(cmd *cobra.Command, args []string) error {
 	// Print banner unless quiet
@@ -181,8 +205,6 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		if !rootQuiet {
 			ui.PrintASCIIArtNeon()
 		}
-		// Silence the core logger so service log messages don't spill
-		// onto stderr and obscure the Bubble Tea dashboard.
 		prevLogger := core.Logger()
 		core.SetLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 		defer core.SetLogger(prevLogger)
@@ -208,8 +230,6 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	}
 
 	s := getServices()
-
-	// Execute operations based on flags (maintains original behavior)
 	startTime := time.Now()
 	logger := core.Logger()
 
@@ -218,8 +238,208 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		slog.String("url", urlFlag),
 	)
 
+	subFlag, _ := cmd.Flags().GetBool("sub")
+	crawlFlag, _ := cmd.Flags().GetBool("crawl")
+	jsFlag, _ := cmd.Flags().GetBool("js")
+	paramsFlag, _ := cmd.Flags().GetBool("params")
+	vulnFlag, _ := cmd.Flags().GetBool("vuln-check")
+	vulnListOnly, _ := cmd.Flags().GetBool("vuln-check-list")
+
+	// Template listing is instant — handle synchronously.
+	if vulnFlag && vulnListOnly {
+		templates := s.Vuln.ListTemplates()
+		for _, t := range templates {
+			fmt.Printf("  [%s] %s (%s)\n", t.Info.Severity, t.Info.Name, t.ID)
+		}
+		return nil
+	}
+
+	// Single-operation shortcut: no goroutine overhead.
+	activeCount := countBools(subFlag, crawlFlag, jsFlag, paramsFlag, vulnFlag)
+	if activeCount <= 1 {
+		return runRootSequential(cmd, ctx, s, logger, urlFlag, startTime)
+	}
+
+	// ── Concurrent execution ──────────────────────────────────────────
+	var (
+		result  runResult
+		printMu sync.Mutex
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+
 	// 🔍 Subdomain enumeration
-	if subFlag, _ := cmd.Flags().GetBool("sub"); subFlag {
+	if subFlag {
+		g.Go(func() error {
+			domain := urlFlag
+			subCfg := core.SubdomainConfig{
+				WordlistFile: flagString(cmd, "sub-w"),
+				Threads:      flagInt(cmd, "sub-threads"),
+				Timeout:      rootTimeout,
+				UseCrtSh:     flagBool(cmd, "sub-crtsh"),
+				CheckAlive:   flagBool(cmd, "sub-alive"),
+				Permutate:    flagBool(cmd, "sub-permute"),
+			}
+			results, err := s.Subdomain.Enumerate(gctx, domain, subCfg)
+			result.subResults = results
+			result.subErr = err
+			if err != nil {
+				logger.Error("subdomain enumeration failed", slog.String("error", err.Error()))
+			} else {
+				printMu.Lock()
+				for _, r := range results {
+					if r.IsAlive {
+						fmt.Printf("  [+]=%s (%s)\n", r.Name, r.Source)
+					} else {
+						fmt.Printf("  [*] %s (%s)\n", r.Name, r.Source)
+					}
+				}
+				printMu.Unlock()
+			}
+			return nil
+		})
+	}
+
+	// 🌐 Crawl + 🔎 Params — streaming pipeline when both active
+	if crawlFlag && paramsFlag {
+		g.Go(func() error {
+			depth, _ := cmd.Flags().GetInt("depth")
+			miningCfg := core.MiningConfig{
+				MineJS:    true,
+				MineForms: true,
+				MineJSON:  true,
+				MinePath:  true,
+			}
+			findings, paramsResult, err := s.Discovery.CrawlAndMine(gctx, urlFlag, depth, miningCfg)
+			result.crawlResults = findings
+			result.crawlErr = err
+			result.paramsResult = paramsResult
+			if err != nil {
+				logger.Error("crawl-and-mine pipeline failed", slog.String("error", err.Error()))
+			} else {
+				printMu.Lock()
+				for _, f := range findings {
+					fmt.Printf("  [%d] %s\n", f.StatusCode, f.URL)
+				}
+				if paramsResult != nil {
+					fmt.Printf("\n[*] Discovered %d parameters (streaming pipeline)\n", paramsResult.TotalCount)
+				}
+				printMu.Unlock()
+			}
+			return nil
+		})
+	} else {
+		// 🌐 Crawl (standalone)
+		if crawlFlag {
+			g.Go(func() error {
+				depth, _ := cmd.Flags().GetInt("depth")
+				depth = core.NormalizeCrawlDepth(depth)
+				findings, err := s.Discovery.Crawl(gctx, urlFlag, depth)
+				result.crawlResults = findings
+				result.crawlErr = err
+				if err != nil {
+					logger.Error("crawl failed", slog.String("error", err.Error()))
+				} else {
+					printMu.Lock()
+					for _, f := range findings {
+						fmt.Printf("  [%d] %s\n", f.StatusCode, f.URL)
+					}
+					printMu.Unlock()
+				}
+				return nil
+			})
+		}
+
+		// 🔎 Parameter mining (standalone)
+		if paramsFlag {
+			g.Go(func() error {
+				cfg := core.MiningConfig{
+					MineJS:    true,
+					MineForms: true,
+					MineJSON:  true,
+					MinePath:  true,
+				}
+				paramsResult, err := s.Discovery.MineParams(gctx, urlFlag, cfg)
+				result.paramsResult = paramsResult
+				result.paramsErr = err
+				if err != nil {
+					logger.Error("param mining failed", slog.String("error", err.Error()))
+				} else {
+					printMu.Lock()
+					fmt.Printf("\n[*] Discovered %d parameters\n", paramsResult.TotalCount)
+					printMu.Unlock()
+				}
+				return nil
+			})
+		}
+	}
+
+	// 📜 JavaScript analysis
+	if jsFlag {
+		g.Go(func() error {
+			jsResult, err := s.Discovery.AnalyzeJS(gctx, urlFlag)
+			result.jsResult = jsResult
+			result.jsErr = err
+			if err != nil {
+				logger.Error("JS analysis failed", slog.String("error", err.Error()))
+			} else {
+				printMu.Lock()
+				fmt.Printf("\n[*] JS Analysis: %d scripts, %d endpoints, %d secrets\n",
+					len(jsResult.ScriptURLs), len(jsResult.Endpoints), len(jsResult.Secrets))
+				printMu.Unlock()
+			}
+			return nil
+		})
+	}
+
+	// 💥 Vulnerability probes
+	if vulnFlag {
+		g.Go(func() error {
+			cfg := core.ProbeConfig{
+				Threads:      flagInt(cmd, "vuln-check-threads"),
+				Timeout:      rootTimeout,
+				UseTemplates: !flagBool(cmd, "vuln-check-legacy"),
+				TemplateDir:  flagString(cmd, "vuln-check-dir"),
+			}
+			findings, err := s.Vuln.Probe(gctx, urlFlag, cfg)
+			result.vulnResults = findings
+			result.vulnErr = err
+			if err != nil {
+				logger.Error("vuln probe failed", slog.String("error", err.Error()))
+			} else {
+				printMu.Lock()
+				for _, f := range findings {
+					fmt.Printf("  [%s] %s — %s\n", f.Severity, f.Name, f.Target)
+				}
+				printMu.Unlock()
+			}
+			return nil
+		})
+	}
+
+	// Wait for all parallel operations to complete.
+	_ = g.Wait()
+
+	elapsed := time.Since(startTime)
+	logger.Info("akemi scan completed",
+		slog.String("trace_id", traceID),
+		slog.Duration("elapsed", elapsed),
+	)
+
+	return nil
+}
+
+// runRootSequential executes a single operation without goroutine overhead.
+// Called when only one flag is active, or zero (edge-case).
+func runRootSequential(cmd *cobra.Command, ctx context.Context, s *Services, logger *slog.Logger, urlFlag string, startTime time.Time) error {
+	subFlag, _ := cmd.Flags().GetBool("sub")
+	crawlFlag, _ := cmd.Flags().GetBool("crawl")
+	jsFlag, _ := cmd.Flags().GetBool("js")
+	paramsFlag, _ := cmd.Flags().GetBool("params")
+	vulnFlag, _ := cmd.Flags().GetBool("vuln-check")
+
+	// 🔍 Subdomain enumeration
+	if subFlag {
 		domain := urlFlag
 		subCfg := core.SubdomainConfig{
 			WordlistFile: flagString(cmd, "sub-w"),
@@ -243,22 +463,60 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 🌐 Crawl
-	if crawlFlag, _ := cmd.Flags().GetBool("crawl"); crawlFlag {
+	// 🌐 Crawl + 🔎 Params — streaming pipeline when both active (sequential path)
+	if crawlFlag && paramsFlag {
 		depth, _ := cmd.Flags().GetInt("depth")
-		depth = core.NormalizeCrawlDepth(depth)
-		findings, err := s.Discovery.Crawl(ctx, urlFlag, depth)
+		miningCfg := core.MiningConfig{
+			MineJS:    true,
+			MineForms: true,
+			MineJSON:  true,
+			MinePath:  true,
+		}
+		findings, paramsResult, err := s.Discovery.CrawlAndMine(ctx, urlFlag, depth, miningCfg)
 		if err != nil {
-			logger.Error("crawl failed", slog.String("error", err.Error()))
+			logger.Error("crawl-and-mine pipeline failed", slog.String("error", err.Error()))
 		} else {
 			for _, f := range findings {
 				fmt.Printf("  [%d] %s\n", f.StatusCode, f.URL)
+			}
+			if paramsResult != nil {
+				fmt.Printf("\n[*] Discovered %d parameters (streaming pipeline)\n", paramsResult.TotalCount)
+			}
+		}
+	} else {
+		// 🌐 Crawl (standalone)
+		if crawlFlag {
+			depth, _ := cmd.Flags().GetInt("depth")
+			depth = core.NormalizeCrawlDepth(depth)
+			findings, err := s.Discovery.Crawl(ctx, urlFlag, depth)
+			if err != nil {
+				logger.Error("crawl failed", slog.String("error", err.Error()))
+			} else {
+				for _, f := range findings {
+					fmt.Printf("  [%d] %s\n", f.StatusCode, f.URL)
+				}
+			}
+		}
+
+		// 🔎 Parameter mining (standalone)
+		if paramsFlag {
+			cfg := core.MiningConfig{
+				MineJS:    true,
+				MineForms: true,
+				MineJSON:  true,
+				MinePath:  true,
+			}
+			result, err := s.Discovery.MineParams(ctx, urlFlag, cfg)
+			if err != nil {
+				logger.Error("param mining failed", slog.String("error", err.Error()))
+			} else {
+				fmt.Printf("\n[*] Discovered %d parameters\n", result.TotalCount)
 			}
 		}
 	}
 
 	// 📜 JavaScript analysis
-	if jsFlag, _ := cmd.Flags().GetBool("js"); jsFlag {
+	if jsFlag {
 		result, err := s.Discovery.AnalyzeJS(ctx, urlFlag)
 		if err != nil {
 			logger.Error("JS analysis failed", slog.String("error", err.Error()))
@@ -268,55 +526,42 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 🔎 Parameter mining
-	if paramsFlag, _ := cmd.Flags().GetBool("params"); paramsFlag {
-		cfg := core.MiningConfig{
-			MineJS:    true,
-			MineForms: true,
-			MineJSON:  true,
-			MinePath:  true,
-		}
-		result, err := s.Discovery.MineParams(ctx, urlFlag, cfg)
-		if err != nil {
-			logger.Error("param mining failed", slog.String("error", err.Error()))
-		} else {
-			fmt.Printf("\n[*] Discovered %d parameters\n", result.TotalCount)
-		}
-	}
-
 	// 💥 Vulnerability probes
-	if vulnFlag, _ := cmd.Flags().GetBool("vuln-check"); vulnFlag {
-		listOnly, _ := cmd.Flags().GetBool("vuln-check-list")
-		if listOnly {
-			templates := s.Vuln.ListTemplates()
-			for _, t := range templates {
-				fmt.Printf("  [%s] %s (%s)\n", t.Info.Severity, t.Info.Name, t.ID)
-			}
+	if vulnFlag {
+		cfg := core.ProbeConfig{
+			Threads:      flagInt(cmd, "vuln-check-threads"),
+			Timeout:      rootTimeout,
+			UseTemplates: !flagBool(cmd, "vuln-check-legacy"),
+			TemplateDir:  flagString(cmd, "vuln-check-dir"),
+		}
+		findings, err := s.Vuln.Probe(ctx, urlFlag, cfg)
+		if err != nil {
+			logger.Error("vuln probe failed", slog.String("error", err.Error()))
 		} else {
-			cfg := core.ProbeConfig{
-				Threads:      flagInt(cmd, "vuln-check-threads"),
-				Timeout:      rootTimeout,
-				UseTemplates: !flagBool(cmd, "vuln-check-legacy"),
-				TemplateDir:  flagString(cmd, "vuln-check-dir"),
-			}
-			findings, err := s.Vuln.Probe(ctx, urlFlag, cfg)
-			if err != nil {
-				logger.Error("vuln probe failed", slog.String("error", err.Error()))
-			} else {
-				for _, f := range findings {
-					fmt.Printf("  [%s] %s — %s\n", f.Severity, f.Name, f.Target)
-				}
+			for _, f := range findings {
+				fmt.Printf("  [%s] %s — %s\n", f.Severity, f.Name, f.Target)
 			}
 		}
 	}
 
 	elapsed := time.Since(startTime)
 	logger.Info("akemi scan completed",
-		slog.String("trace_id", traceID),
+		slog.String("trace_id", core.TraceIDFromContext(ctx)),
 		slog.Duration("elapsed", elapsed),
 	)
 
 	return nil
+}
+
+// countBools returns how many of the provided bools are true.
+func countBools(vals ...bool) int {
+	n := 0
+	for _, v := range vals {
+		if v {
+			n++
+		}
+	}
+	return n
 }
 
 // =============================================================================
