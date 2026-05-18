@@ -87,7 +87,9 @@ pub async fn run_host_discovery(
     let start = Instant::now();
     let total = ips.len() as u32;
 
-    eprintln!("[*] Host discovery: {} hosts, {} threads", total, threads);
+    if verbose {
+        eprintln!("[*] Host discovery: {} hosts, {} threads", total, threads);
+    }
 
     let alive_hosts: Arc<Mutex<Vec<AliveHost>>> = Arc::new(Mutex::new(Vec::new()));
     let scanned_count = Arc::new(AtomicU32::new(0));
@@ -129,6 +131,7 @@ pub async fn run_host_discovery(
         let scanned_count = scanned_count.clone();
         let alive_count = alive_count.clone();
         let dur = Duration::from_millis(timeout_ms);
+        let verbose = verbose;
 
         let handle = tokio::spawn(async move {
             let permit = sem.acquire_owned().await.unwrap();
@@ -157,15 +160,19 @@ pub async fn run_host_discovery(
                 };
 
                 if let Some(ref rdns_name) = host.rdns {
-                    eprintln!(
-                        "   \x1b[32m[+]\x1b[0m \x1b[1m{}\x1b[0m alive ({}) | \x1b[90m{}\x1b[0m | {:.1}ms",
-                        ip_str, host.method, rdns_name, host.latency_ms
-                    );
+                    if verbose {
+                        eprintln!(
+                            "   \x1b[32m[+]\x1b[0m \x1b[1m{}\x1b[0m alive ({}) | \x1b[90m{}\x1b[0m | {:.1}ms",
+                            ip_str, host.method, rdns_name, host.latency_ms
+                        );
+                    }
                 } else {
-                    eprintln!(
-                        "   \x1b[32m[+]\x1b[0m \x1b[1m{}\x1b[0m alive ({}) | {:.1}ms",
-                        ip_str, host.method, host.latency_ms
-                    );
+                    if verbose {
+                        eprintln!(
+                            "   \x1b[32m[+]\x1b[0m \x1b[1m{}\x1b[0m alive ({}) | {:.1}ms",
+                            ip_str, host.method, host.latency_ms
+                        );
+                    }
                 }
 
                 alive_count.fetch_add(1, Ordering::Relaxed);
@@ -187,12 +194,14 @@ pub async fn run_host_discovery(
     let elapsed = start.elapsed();
     let alive = alive_hosts.lock().await.clone();
 
-    eprintln!(
-        "[*] Discovery completed. {}/{} hosts alive in {:.2}s",
-        alive.len(),
-        total,
-        elapsed.as_secs_f64()
-    );
+    if verbose {
+        eprintln!(
+            "[*] Discovery completed. {}/{} hosts alive in {:.2}s",
+            alive.len(),
+            total,
+            elapsed.as_secs_f64()
+        );
+    }
 
     HostDiscoveryResult {
         total_hosts: total,

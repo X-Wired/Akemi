@@ -62,6 +62,11 @@ func (d *blockingDiscoverer) MineParams(ctx context.Context, targetURL string, c
 	return &core.ParamDiscoveryResult{Params: map[string]core.ParamDetail{}}, nil
 }
 
+func (d *blockingDiscoverer) CrawlAndMine(ctx context.Context, startURL string, maxDepth int, cfg core.MiningConfig, onFinding func(core.CrawlFinding)) ([]core.CrawlFinding, *core.ParamDiscoveryResult, error) {
+	findings, err := d.CrawlWithCallback(ctx, startURL, maxDepth, onFinding)
+	return findings, &core.ParamDiscoveryResult{Params: map[string]core.ParamDetail{}}, err
+}
+
 func (d *blockingDiscoverer) AnalyzeJS(ctx context.Context, pageURL string) (*core.JSAnalysisResult, error) {
 	return &core.JSAnalysisResult{}, nil
 }
@@ -100,19 +105,17 @@ func TestFullSurfaceMapEmitsLiveDiscoveryBeforePortScan(t *testing.T) {
 		done <- err
 	}()
 
+	// Phase 2.2: crawl and port scan now run concurrently via errgroup.
+	// Wait for crawl to enter (it must start in parallel with port scan).
 	select {
 	case <-discoverer.crawlEntered:
 	case <-time.After(time.Second):
-		t.Fatal("full_surface_map did not enter crawl first")
+		t.Fatal("full_surface_map did not start crawl within timeout")
 	}
 
-	select {
-	case <-scanner.started:
-		t.Fatal("port scan started before live crawl had a chance to emit discovery")
-	default:
-	}
-
-	deadline := time.After(time.Second)
+	// Both crawl and port scan may start concurrently; that's expected.
+	// The key is that URL discovery items still arrive.
+	deadline := time.After(2 * time.Second)
 	for {
 		select {
 		case msg := <-events:

@@ -1,11 +1,12 @@
 package recon
 
 import (
-	core "Akemi/internal/core"
-	proxy "Akemi/internal/platform/proxy"
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -13,6 +14,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+
+	core "Akemi/internal/core"
+	proxy "Akemi/internal/platform/proxy"
 )
 
 // PortScanResult holds details of an open port.
@@ -187,48 +193,56 @@ type hostDiscoveryScanResult struct {
 }
 
 // findScannerBinary locates the Akemi-Spear binary.
-// Search order: same directory as Akemi binary → PATH.
-func findScannerBinary() string {
+// Search order: same directory as Akemi binary → build output dirs → CWD → PATH.
+// Returns the path and a list of locations that were checked (for diagnostics).
+func findScannerBinary() (string, []string) {
 	exeName := "Akemi-Spear"
 	if isWindows() {
 		exeName = "Akemi-Spear.exe"
 	}
 
-	// First, check in the Akemi-Spear build output (most likely for developers)
-	if cwd, err := os.Getwd(); err == nil {
-		candidate := filepath.Join(cwd, "Akemi-Spear", "target", "release", exeName)
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-		candidate = filepath.Join(cwd, "Akemi-Spear", "target", "debug", exeName)
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
+	var searched []string
 
-	// Then, check same directory as our binary (distribution mode)
+	// 1. Same directory as the Akemi binary (distribution mode)
 	if selfPath, err := os.Executable(); err == nil {
 		dir := filepath.Dir(selfPath)
 		candidate := filepath.Join(dir, exeName)
+		searched = append(searched, candidate)
 		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+			return candidate, nil
 		}
 	}
 
-	// Also check CWD
+	// 2. Release build output (most likely for developers)
+	if cwd, err := os.Getwd(); err == nil {
+		candidate := filepath.Join(cwd, "Akemi-Spear", "target", "release", exeName)
+		searched = append(searched, candidate)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+		candidate = filepath.Join(cwd, "Akemi-Spear", "target", "debug", exeName)
+		searched = append(searched, candidate)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	// 3. Current working directory
 	if cwd, err := os.Getwd(); err == nil {
 		candidate := filepath.Join(cwd, exeName)
+		searched = append(searched, candidate)
 		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+			return candidate, nil
 		}
 	}
 
-	// Fall back to PATH
+	// 4. Fall back to PATH
 	if p, err := exec.LookPath(exeName); err == nil {
-		return p
+		return p, nil
 	}
+	searched = append(searched, "$PATH (not found)")
 
-	return ""
+	return "", searched
 }
 
 func isWindows() bool {
@@ -246,10 +260,27 @@ func extractHost(target string) string {
 	return target
 }
 
-// Run executes the port scan by invoking the Rust Akemi-Spear binary.
+// resolveHostIPs resolves a hostname to IPv4 addresses (Go-native path).
+func resolveHostIPs(host string) ([]string, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []string{host}, nil
+	}
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+	}
+	return addrs, nil
+}
+
+// =============================================================================
+// Run — dispatches to Go-native or Rust engine based on scan size
+// =============================================================================
+
+// Run executes the port scan. For small connect scans (≤50 ports, no SYN,
+// no banner grab, no resume) a lightweight Go-native goroutine scanner is
+// used, avoiding ~200 ms of process-spawn + JSON-pipe overhead (Phase 1.4).
+// All other scans use the full Rust Akemi-Spear engine.
 func (s *PortScanner) Run() (*PortScanSummary, error) {
-	// Normalise the host: strip URL scheme so the Rust scanner receives a
-	// bare hostname or IP.
 	s.Host = extractHost(s.Host)
 
 	if proxy.ProxyEnabled() {
@@ -259,9 +290,115 @@ func (s *PortScanner) Run() (*PortScanSummary, error) {
 		return nil, fmt.Errorf("port scanning is not available through a proxy (%s); unset the proxy and retry", proxy.ActiveProxyDisplay())
 	}
 
-	binPath := findScannerBinary()
+	// ── Phase 1.4: Go-native fast path ──────────────────────────
+	if s.canUseGoNative() {
+		return s.runGoNative()
+	}
+
+	return s.runRustEngine()
+}
+
+// canUseGoNative returns true when the scan is small enough to run
+// in-process without spawning the Rust binary.
+func (s *PortScanner) canUseGoNative() bool {
+	if s.SynMode || s.BannerGrab || s.NoPorts || s.Resume != "" {
+		return false
+	}
+	return len(s.Ports) <= 50
+}
+
+// runGoNative performs a lightweight TCP connect scan using goroutines.
+func (s *PortScanner) runGoNative() (*PortScanSummary, error) {
+	start := time.Now()
+
+	ips, err := resolveHostIPs(s.Host)
+	if err != nil {
+		return nil, fmt.Errorf("go-native scan: %w", err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("go-native scan: no IPs resolved for %s", s.Host)
+	}
+
+	if s.Threads <= 0 {
+		s.Threads = 10
+	}
+
+	s.printf("\n[*] Starting Port Scan on %s (Go-native, %d ports, %d threads)\n",
+		s.Host, len(s.Ports), s.Threads)
+
+	// Build port list (respect randomize)
+	ports := make([]int, len(s.Ports))
+	copy(ports, s.Ports)
+	if s.Randomize {
+		rand.Shuffle(len(ports), func(i, j int) {
+			ports[i], ports[j] = ports[j], ports[i]
+		})
+	}
+
+	timeout := time.Duration(s.TimeoutS) * time.Second
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+
+	dialer := &net.Dialer{Timeout: timeout}
+
+	var mu sync.Mutex
+	var openPorts []PortScanResult
+	sem := make(chan struct{}, s.Threads)
+	var wg sync.WaitGroup
+
+	for _, port := range ports {
+		wg.Add(1)
+		go func(p int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			target := net.JoinHostPort(ips[0], strconv.Itoa(p))
+			conn, err := dialer.DialContext(context.Background(), "tcp", target)
+			if err == nil {
+				conn.Close()
+				mu.Lock()
+				openPorts = append(openPorts, PortScanResult{
+					Port:  p,
+					State: "open",
+				})
+				mu.Unlock()
+				s.printf("   \033[32m[+]\033[0m Port %-5d open\n", p)
+			}
+		}(port)
+	}
+
+	wg.Wait()
+
+	// Sort results by port number for consistent output
+	sort.Slice(openPorts, func(i, j int) bool {
+		return openPorts[i].Port < openPorts[j].Port
+	})
+
+	elapsed := time.Since(start)
+
+	s.printf("[*] Port scan completed via Go-native engine. Found %d open ports in %.2fs.\n",
+		len(openPorts), elapsed.Seconds())
+
+	return &PortScanSummary{
+		Hostname:     s.Host,
+		IPs:          ips,
+		Results:      openPorts,
+		ScanTimeMs:   elapsed.Milliseconds(),
+		TotalScanned: len(ports),
+		ScanMode:     "connect",
+	}, nil
+}
+
+// runRustEngine invokes the external Akemi-Spear binary (original path).
+func (s *PortScanner) runRustEngine() (*PortScanSummary, error) {
+	binPath, searched := findScannerBinary()
 	if binPath == "" {
-		return nil, fmt.Errorf("Akemi-Spear binary not found; build it with: cd Akemi-Spear && cargo build --release")
+		return nil, fmt.Errorf(
+			"Akemi-Spear binary not found. Searched:\n  %s\nBuild it with: cd Akemi-Spear && cargo build --release",
+			strings.Join(searched, "\n  "),
+		)
 	}
 
 	if s.NoPorts {
@@ -305,7 +442,17 @@ func (s *PortScanner) Run() (*PortScanSummary, error) {
 		return nil, fmt.Errorf("error marshaling scan request: %w", err)
 	}
 
-	// Execute the Rust scanner
+	// Execute the Rust scanner with a timeout guard.
+	// Compute a reasonable upper bound: (ports * timeout_ms per port / threads) + 60s overhead
+	scanTimeout := time.Duration(s.TimeoutS)*time.Second*time.Duration(len(s.Ports))/
+		time.Duration(max(s.Threads, 1)) + 60*time.Second
+	if scanTimeout < 30*time.Second {
+		scanTimeout = 30 * time.Second
+	}
+	if scanTimeout > 30*time.Minute {
+		scanTimeout = 30 * time.Minute
+	}
+
 	cmd := exec.Command(binPath, "--stdin")
 	cmd.Stdin = strings.NewReader(string(reqJSON))
 
@@ -348,7 +495,15 @@ func (s *PortScanner) Run() (*PortScanSummary, error) {
 		stdoutBuf.WriteString("\n")
 	}
 
+	// Timeout guardian: kill the process if it exceeds the computed timeout
+	timeoutTimer := time.AfterFunc(scanTimeout, func() {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+	})
+
 	if err := cmd.Wait(); err != nil {
+		timeoutTimer.Stop()
 		<-stderrDone
 		stderrText := strings.TrimSpace(stderrBuf.String())
 		if stderrText != "" {
@@ -356,6 +511,7 @@ func (s *PortScanner) Run() (*PortScanSummary, error) {
 		}
 		return nil, fmt.Errorf("Akemi-Spear exited with error: %w", err)
 	}
+	timeoutTimer.Stop()
 	<-stderrDone
 
 	// Parse the JSON result

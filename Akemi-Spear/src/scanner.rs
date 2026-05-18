@@ -42,13 +42,15 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
         }
     }
 
-    // Display IP enrichment
-    eprintln!("[*] Target: {}", req.host);
-    for ip in &ips {
-        if let Some(rdns) = rdns_map.get(ip) {
-            eprintln!("    \x1b[36m→\x1b[0m {} (\x1b[90m{}\x1b[0m)", ip, rdns);
-        } else {
-            eprintln!("    \x1b[36m→\x1b[0m {}", ip);
+    // Display IP enrichment (only in verbose mode)
+    if req.verbose {
+        eprintln!("[*] Target: {}", req.host);
+        for ip in &ips {
+            if let Some(rdns) = rdns_map.get(ip) {
+                eprintln!("    \x1b[36m→\x1b[0m {} (\x1b[90m{}\x1b[0m)", ip, rdns);
+            } else {
+                eprintln!("    \x1b[36m→\x1b[0m {}", ip);
+            }
         }
     }
 
@@ -139,6 +141,7 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
         let resume_file = req.resume_file.clone();
         let host = req.host.clone();
         let banner_handles = banner_handles.clone();
+        let verbose = req.verbose;
 
         let handle = tokio::spawn(async move {
             // Acquire semaphore — this gates how many connects run at once
@@ -163,6 +166,7 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
                     let fingerprints2 = fingerprints.clone();
                     let host_for_banner = host.clone();
                     let open_ports2 = open_ports.clone();
+                    let verbose2 = verbose;
                     let bh = tokio::spawn(async move {
                         let result = grab_banner(
                             &host_for_banner,
@@ -180,11 +184,13 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
                             format!("\x1b[36m{}\x1b[0m", result.technology.join(", "))
                         };
 
-                        eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open | Tech: {} | Banner: \x1b[90m{}\x1b[0m",
-                            port,
-                            tech_str,
-                            result.banner.as_deref().unwrap_or("<no banner>")
-                        );
+                        if verbose2 {
+                            eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open | Tech: {} | Banner: \x1b[90m{}\x1b[0m",
+                                port,
+                                tech_str,
+                                result.banner.as_deref().unwrap_or("<no banner>")
+                            );
+                        }
 
                         open_ports2.lock().await.push(result);
                     });
@@ -201,7 +207,9 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
                         tls: false,
                         tls_cn: None,
                     };
-                    eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open", port);
+                    if verbose {
+                        eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open", port);
+                    }
                     open_ports.lock().await.push(result);
                 }
             }
@@ -261,11 +269,13 @@ pub async fn run_connect_scan(req: &ScanRequest) -> Result<ScanResult, String> {
     let elapsed = start.elapsed();
     let open = open_ports.lock().await.clone();
 
-    eprintln!(
-        "[*] Scan completed. {} open ports found in {:.2}s",
-        open.len(),
-        elapsed.as_secs_f64()
-    );
+    if req.verbose {
+        eprintln!(
+            "[*] Scan completed. {} open ports found in {:.2}s",
+            open.len(),
+            elapsed.as_secs_f64()
+        );
+    }
 
     Ok(ScanResult {
         hostname: req.host.clone(),

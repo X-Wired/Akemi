@@ -35,7 +35,7 @@ func (s *DiscoveryService) Crawl(ctx context.Context, startURL string, maxDepth 
 // of MinePageParams workers. This eliminates the double-crawl problem: when
 // --crawl and --params are used together the crawl happens once and param
 // mining runs concurrently on the live URL stream (Phase 2.2 optimization).
-func (s *DiscoveryService) CrawlAndMine(ctx context.Context, startURL string, maxDepth int, miningCfg core.MiningConfig) ([]core.CrawlFinding, *core.ParamDiscoveryResult, error) {
+func (s *DiscoveryService) CrawlAndMine(ctx context.Context, startURL string, maxDepth int, miningCfg core.MiningConfig, onFinding func(core.CrawlFinding)) ([]core.CrawlFinding, *core.ParamDiscoveryResult, error) {
 	defer core.LogDuration(ctx, "Discoverer.CrawlAndMine", time.Now())
 	maxDepth = core.NormalizeCrawlDepth(maxDepth)
 
@@ -64,14 +64,12 @@ func (s *DiscoveryService) CrawlAndMine(ctx context.Context, startURL string, ma
 		reconCfg.Timeout = 10
 	}
 
-	// Buffered channel: crawler → mining workers
 	urlCh := make(chan string, 200)
 	client := core.CreateHTTPClient(reconCfg.Timeout)
 
 	var mu sync.Mutex
 	aggregated := make(map[string]core.ParamDetail)
 
-	// Start mining workers
 	workerCount := reconCfg.Threads
 	var workerWg sync.WaitGroup
 
@@ -106,14 +104,15 @@ func (s *DiscoveryService) CrawlAndMine(ctx context.Context, startURL string, ma
 		}()
 	}
 
-	// Start crawler — feeds URLs into channel as discovered
 	crawlFindings, crawlErr := s.CrawlWithCallback(ctx, startURL, maxDepth, func(f core.CrawlFinding) {
+		if onFinding != nil {
+			onFinding(f)
+		}
 		if f.StatusCode >= 200 && f.StatusCode < 400 {
 			select {
 			case urlCh <- f.URL:
 			case <-ctx.Done():
 			default:
-				// Channel full — drop (rare with 200-buf)
 			}
 		}
 	})
@@ -154,41 +153,22 @@ func (s *DiscoveryService) CrawlWithCallback(ctx context.Context, startURL strin
 
 	detailed, err := recon.CrawlDetailedWithCallbackContext(ctx, startURL, maxDepth, func(f recon.CrawlFinding) {
 		if onFinding != nil {
-			onFinding(convertCrawlFinding(f))
+			onFinding(f) // Phase 1.3: no conversion — type alias
 		}
 	})
-	findings := convertCrawlFindings(detailed)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "crawl failed",
 			slog.String("url", startURL),
 			slog.String("error", err.Error()),
-			slog.Int("partial_urls_found", len(findings)),
+			slog.Int("partial_urls_found", len(detailed)),
 		)
-		return findings, core.NewError("Discoverer.Crawl", startURL, err)
+		return detailed, core.NewError("Discoverer.Crawl", startURL, err)
 	}
 
 	s.logger.InfoContext(ctx, "crawl completed",
-		slog.Int("urls_found", len(findings)),
+		slog.Int("urls_found", len(detailed)),
 	)
-	return findings, nil
-}
-
-func convertCrawlFindings(detailed []recon.CrawlFinding) []core.CrawlFinding {
-	findings := make([]core.CrawlFinding, len(detailed))
-	for i, f := range detailed {
-		findings[i] = convertCrawlFinding(f)
-	}
-	return findings
-}
-
-func convertCrawlFinding(f recon.CrawlFinding) core.CrawlFinding {
-	return core.CrawlFinding{
-		URL:        f.URL,
-		StatusCode: f.StatusCode,
-		Depth:      f.Depth,
-		SourceURL:  f.SourceURL,
-		Title:      f.Status,
-	}
+	return detailed, nil
 }
 
 // MineParams discovers HTTP parameters from a target URL.
@@ -350,52 +330,14 @@ func (s *DiscoveryService) DiscoverAPISurface(ctx context.Context, startURL stri
 		return nil, core.NewError("Discoverer.DiscoverAPISurface", startURL, err)
 	}
 
-	apiEndpoints := make([]core.APIEndpointFinding, len(endpoints))
-	for i, ep := range endpoints {
-		apiEndpoints[i] = core.APIEndpointFinding{
-			URL:          ep.URL,
-			Path:         ep.Path,
-			Method:       ep.Method,
-			APIType:      ep.APIType,
-			Version:      ep.Version,
-			StatusCode:   ep.StatusCode,
-			Status:       ep.Status,
-			ContentType:  ep.ContentType,
-			AuthRequired: ep.AuthRequired,
-			Confidence:   ep.Confidence,
-			SourceURLs:   ep.SourceURLs,
-			SourceKinds:  ep.SourceKinds,
-			Evidence:     ep.Evidence,
-			Parameters:   convertAPIParameters(ep.Parameters),
-		}
-	}
-
-	apiSpecs := make([]core.APISpecFinding, len(specs))
-	for i, sp := range specs {
-		apiSpecs[i] = core.APISpecFinding{
-			URL:                     sp.URL,
-			APIType:                 sp.APIType,
-			Format:                  sp.Format,
-			Title:                   sp.Title,
-			Version:                 sp.Version,
-			StatusCode:              sp.StatusCode,
-			Status:                  sp.Status,
-			ContentType:             sp.ContentType,
-			SourceURLs:              sp.SourceURLs,
-			Evidence:                sp.Evidence,
-			EndpointCount:           sp.EndpointCount,
-			DiscoveredEndpointCount: sp.DiscoveredEndpointCount,
-			CoveragePercent:         sp.CoveragePercent,
-		}
-	}
-
+	// Phase 1.3: recon types are aliases for core types — direct use, no conversion.
 	s.logger.InfoContext(ctx, "API discovery completed",
-		slog.Int("endpoints", len(apiEndpoints)),
-		slog.Int("specs", len(apiSpecs)),
+		slog.Int("endpoints", len(endpoints)),
+		slog.Int("specs", len(specs)),
 	)
 	return &core.APISurfaceResult{
-		APIEndpoints: apiEndpoints,
-		APISpecs:     apiSpecs,
+		APIEndpoints: endpoints,
+		APISpecs:     specs,
 	}, nil
 }
 
@@ -437,73 +379,12 @@ func (s *DiscoveryService) HuntAPISurface(ctx context.Context, req core.APIHuntR
 		Counts:        result.Counts,
 		StageErrors:   result.StageErrors,
 		SourceSummary: result.SourceSummary,
-	}
-	out.APIEndpoints = make([]core.APIEndpointFinding, len(result.APIEndpoints))
-	for i, ep := range result.APIEndpoints {
-		out.APIEndpoints[i] = core.APIEndpointFinding{
-			URL:          ep.URL,
-			Path:         ep.Path,
-			Method:       ep.Method,
-			APIType:      ep.APIType,
-			Version:      ep.Version,
-			StatusCode:   ep.StatusCode,
-			Status:       ep.Status,
-			ContentType:  ep.ContentType,
-			AuthRequired: ep.AuthRequired,
-			Confidence:   ep.Confidence,
-			SourceURLs:   ep.SourceURLs,
-			SourceKinds:  ep.SourceKinds,
-			Evidence:     ep.Evidence,
-			Parameters:   convertAPIParameters(ep.Parameters),
-		}
-	}
-	out.APISpecs = make([]core.APISpecFinding, len(result.APISpecs))
-	for i, sp := range result.APISpecs {
-		out.APISpecs[i] = core.APISpecFinding{
-			URL:                     sp.URL,
-			APIType:                 sp.APIType,
-			Format:                  sp.Format,
-			Title:                   sp.Title,
-			Version:                 sp.Version,
-			StatusCode:              sp.StatusCode,
-			Status:                  sp.Status,
-			ContentType:             sp.ContentType,
-			SourceURLs:              sp.SourceURLs,
-			Evidence:                sp.Evidence,
-			EndpointCount:           sp.EndpointCount,
-			DiscoveredEndpointCount: sp.DiscoveredEndpointCount,
-			CoveragePercent:         sp.CoveragePercent,
-		}
-	}
-	out.Parameters = make([]core.APIParameterFinding, len(result.Parameters))
-	for i, p := range result.Parameters {
-		out.Parameters[i] = core.APIParameterFinding{
-			Name:      p.Name,
-			In:        p.In,
-			Type:      p.Type,
-			Required:  p.Required,
-			Endpoints: p.Endpoints,
-			Sources:   p.Sources,
-		}
+		// Phase 1.3: recon types are core type aliases — direct assignment.
+		APIEndpoints: result.APIEndpoints,
+		APISpecs:     result.APISpecs,
+		Parameters:   result.Parameters,
 	}
 	return out, nil
-}
-
-func convertAPIParameters(params []recon.APIParameter) []core.APIParameter {
-	if len(params) == 0 {
-		return nil
-	}
-	out := make([]core.APIParameter, len(params))
-	for i, p := range params {
-		out[i] = core.APIParameter{
-			Name:     p.Name,
-			In:       p.In,
-			Required: p.Required,
-			Type:     p.Type,
-			Sources:  p.Sources,
-		}
-	}
-	return out
 }
 
 func firstPositive(values ...int) int {

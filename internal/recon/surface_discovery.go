@@ -28,40 +28,11 @@ type SecretFinding struct {
 	Evidence   []string `json:"evidence,omitempty"`
 }
 
-// APIEndpointFinding captures passive API surface discovery details.
-type APIEndpointFinding struct {
-	URL          string         `json:"url"`
-	Path         string         `json:"path,omitempty"`
-	Method       string         `json:"method,omitempty"`
-	APIType      string         `json:"api_type"`
-	Version      string         `json:"version,omitempty"`
-	StatusCode   int            `json:"status_code,omitempty"`
-	Status       string         `json:"status,omitempty"`
-	ContentType  string         `json:"content_type,omitempty"`
-	AuthRequired bool           `json:"auth_required,omitempty"`
-	Confidence   float64        `json:"confidence,omitempty"`
-	SourceURLs   []string       `json:"source_urls,omitempty"`
-	SourceKinds  []string       `json:"source_kinds,omitempty"`
-	Evidence     []string       `json:"evidence,omitempty"`
-	Parameters   []APIParameter `json:"parameters,omitempty"`
-}
+// APIEndpointFinding is an alias for core.APIEndpointFinding (Phase 1.3).
+type APIEndpointFinding = core.APIEndpointFinding
 
-// APISpecFinding tracks discovered API specs and their metadata.
-type APISpecFinding struct {
-	URL                     string   `json:"url"`
-	APIType                 string   `json:"api_type"`
-	Format                  string   `json:"format,omitempty"`
-	Title                   string   `json:"title,omitempty"`
-	Version                 string   `json:"version,omitempty"`
-	StatusCode              int      `json:"status_code,omitempty"`
-	Status                  string   `json:"status,omitempty"`
-	ContentType             string   `json:"content_type,omitempty"`
-	SourceURLs              []string `json:"source_urls,omitempty"`
-	Evidence                []string `json:"evidence,omitempty"`
-	EndpointCount           int      `json:"endpoint_count,omitempty"`
-	DiscoveredEndpointCount int      `json:"discovered_endpoint_count,omitempty"`
-	CoveragePercent         float64  `json:"coverage_percent,omitempty"`
-}
+// APISpecFinding is an alias for core.APISpecFinding (Phase 1.3).
+type APISpecFinding = core.APISpecFinding
 
 // APIHuntRequest configures Akemi's richer API Hunter workflow.
 type APIHuntRequest struct {
@@ -88,24 +59,11 @@ type APIHuntResult struct {
 	SourceSummary map[string]int
 }
 
-// APIParameter describes a parameter tied to an API endpoint.
-type APIParameter struct {
-	Name     string   `json:"name"`
-	In       string   `json:"in,omitempty"`
-	Required bool     `json:"required,omitempty"`
-	Type     string   `json:"type,omitempty"`
-	Sources  []string `json:"sources,omitempty"`
-}
+// APIParameter is an alias for core.APIParameter (Phase 1.3).
+type APIParameter = core.APIParameter
 
-// APIParameterFinding aggregates API parameters across endpoints.
-type APIParameterFinding struct {
-	Name      string   `json:"name"`
-	In        string   `json:"in,omitempty"`
-	Type      string   `json:"type,omitempty"`
-	Required  bool     `json:"required,omitempty"`
-	Endpoints []string `json:"endpoints,omitempty"`
-	Sources   []string `json:"sources,omitempty"`
-}
+// APIParameterFinding is an alias for core.APIParameterFinding (Phase 1.3).
+type APIParameterFinding = core.APIParameterFinding
 
 type clientSurfaceAnalysis struct {
 	ScriptURLs      []string

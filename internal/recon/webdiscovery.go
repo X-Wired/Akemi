@@ -97,14 +97,8 @@ type RichParamDetail struct {
 	Suspicious   bool          // Matches the suspicious regex
 }
 
-// CrawlFinding preserves the URL and HTTP response status observed during crawling.
-type CrawlFinding struct {
-	URL        string `json:"url"`
-	StatusCode int    `json:"status_code"`
-	Status     string `json:"status"`
-	Depth      int    `json:"depth"`
-	SourceURL  string `json:"source_url,omitempty"`
-}
+// CrawlFinding is an alias for core.CrawlFinding (Phase 1.3 type unification).
+type CrawlFinding = core.CrawlFinding
 
 // MiningConfig holds all options for the enhanced param miner.
 type MiningConfig struct {

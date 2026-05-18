@@ -110,6 +110,12 @@ type Discoverer interface {
 	// Crawl discovers URLs by crawling from a start URL.
 	Crawl(ctx context.Context, startURL string, maxDepth int) ([]CrawlFinding, error)
 
+	// CrawlAndMine streams crawl discoveries into parameter mining concurrently.
+	// The crawl only happens once — discovered URLs are mined for parameters
+	// as they arrive, eliminating the double-crawl problem (Phase 2.2).
+	// onFinding is an optional callback for live crawl progress (can be nil).
+	CrawlAndMine(ctx context.Context, startURL string, maxDepth int, cfg MiningConfig, onFinding func(CrawlFinding)) ([]CrawlFinding, *ParamDiscoveryResult, error)
+
 	// MineParams discovers HTTP parameters from URLs, forms, JS, and JSON.
 	MineParams(ctx context.Context, targetURL string, cfg MiningConfig) (*ParamDiscoveryResult, error)
 
@@ -130,6 +136,7 @@ type Discoverer interface {
 type CrawlFinding struct {
 	URL        string `json:"url"`
 	StatusCode int    `json:"status_code"`
+	Status     string `json:"status,omitempty"`
 	Depth      int    `json:"depth"`
 	SourceURL  string `json:"source_url"`
 	Title      string `json:"title,omitempty"`

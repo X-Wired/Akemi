@@ -310,7 +310,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 				MineJSON:  true,
 				MinePath:  true,
 			}
-			findings, paramsResult, err := s.Discovery.CrawlAndMine(gctx, urlFlag, depth, miningCfg)
+			findings, paramsResult, err := s.Discovery.CrawlAndMine(gctx, urlFlag, depth, miningCfg, nil)
 			result.crawlResults = findings
 			result.crawlErr = err
 			result.paramsResult = paramsResult
@@ -472,7 +472,7 @@ func runRootSequential(cmd *cobra.Command, ctx context.Context, s *Services, log
 			MineJSON:  true,
 			MinePath:  true,
 		}
-		findings, paramsResult, err := s.Discovery.CrawlAndMine(ctx, urlFlag, depth, miningCfg)
+		findings, paramsResult, err := s.Discovery.CrawlAndMine(ctx, urlFlag, depth, miningCfg, nil)
 		if err != nil {
 			logger.Error("crawl-and-mine pipeline failed", slog.String("error", err.Error()))
 		} else {

@@ -72,21 +72,27 @@ pub mod inner {
         let rate_limiter = RateLimiter::new(req.rate, req.threads);
 
         // Phase 1: SYN discovery
-        eprintln!("[*] Phase 1: SYN discovery ({} ports)...", total_ports);
+        if req.verbose {
+            eprintln!("[*] Phase 1: SYN discovery ({} ports)...", total_ports);
+        }
         let open_port_numbers =
             syn_discovery(&target_ip, &ports, req.timeout_ms, &rate_limiter).await;
-        eprintln!(
-            "[*] Phase 1 complete: {} open ports discovered",
-            open_port_numbers.len()
-        );
+        if req.verbose {
+            eprintln!(
+                "[*] Phase 1 complete: {} open ports discovered",
+                open_port_numbers.len()
+            );
+        }
 
         // Phase 2: Banner enrichment
         let mut open_ports = Vec::new();
         if req.banner_grab && !open_port_numbers.is_empty() {
-            eprintln!(
-                "[*] Phase 2: Banner grabbing {} open ports...",
-                open_port_numbers.len()
-            );
+            if req.verbose {
+                eprintln!(
+                    "[*] Phase 2: Banner grabbing {} open ports...",
+                    open_port_numbers.len()
+                );
+            }
             let sem = Arc::new(tokio::sync::Semaphore::new(req.threads as usize));
             let results: Arc<Mutex<Vec<PortResult>>> = Arc::new(Mutex::new(Vec::new()));
             let mut handles = Vec::new();
@@ -100,6 +106,7 @@ pub mod inner {
                 let results = results.clone();
                 let host = req.host.clone();
                 let p = *port;
+                let verbose = req.verbose;
 
                 let handle = tokio::spawn(async move {
                     let result =
@@ -110,11 +117,13 @@ pub mod inner {
                         format!("\x1b[36m{}\x1b[0m", result.technology.join(", "))
                     };
 
-                    eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open | Tech: {} | Banner: \x1b[90m{}\x1b[0m",
-                        p,
-                        tech_str,
-                        result.banner.as_deref().unwrap_or("<no banner>")
-                    );
+                    if verbose {
+                        eprintln!("   \x1b[32m[+]\x1b[0m Port \x1b[1m{:<5}\x1b[0m open | Tech: {} | Banner: \x1b[90m{}\x1b[0m",
+                            p,
+                            tech_str,
+                            result.banner.as_deref().unwrap_or("<no banner>")
+                        );
+                    }
                     results.lock().await.push(result);
                     drop(permit);
                 });
@@ -143,11 +152,13 @@ pub mod inner {
         }
 
         let elapsed = start.elapsed();
-        eprintln!(
-            "[*] SYN scan completed. {} open ports in {:.2}s",
-            open_ports.len(),
-            elapsed.as_secs_f64()
-        );
+        if req.verbose {
+            eprintln!(
+                "[*] SYN scan completed. {} open ports in {:.2}s",
+                open_ports.len(),
+                elapsed.as_secs_f64()
+            );
+        }
 
         // Save final state
         if !req.resume_file.is_empty() {

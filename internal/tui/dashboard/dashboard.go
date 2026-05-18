@@ -29,6 +29,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -994,30 +995,6 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 		addErr(stage, err)
 		return checkCtx()
 	}
-	runParamMining := func(stage string, depth int) error {
-		if services.Discoverer == nil {
-			return nil
-		}
-		emitter.progress(stage)
-		params, err := services.Discoverer.MineParams(ctx, cfg.Target, core.MiningConfig{
-			Depth:       core.NormalizeCrawlDepth(depth),
-			Threads:     firstPositiveInt(cfg.Threads, 20),
-			Timeout:     firstPositiveInt(cfg.Timeout, 10),
-			MineJS:      true,
-			MineForms:   true,
-			MineJSON:    true,
-			MinePath:    true,
-			ActiveBrute: false,
-		})
-		if params != nil {
-			result.Params = params
-			for _, name := range sortedParamNames(params.Params) {
-				emitter.param(name, params.Params[name])
-			}
-		}
-		addErr(stage, err)
-		return checkCtx()
-	}
 	addHiddenParam := func(name, source string) {
 		name = strings.TrimSpace(name)
 		if name == "" {
@@ -1120,19 +1097,62 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 
 	switch intent {
 	case "full_surface_map":
-		crawledURLs, err := runCrawl(core.NormalizeCrawlDepth(cfg.Depth))
-		if err != nil {
+		// ── Level 1: parallel independent operations ──────────
+		var crawledURLs []string
+		var crawlMu sync.Mutex
+		g, gctx := errgroup.WithContext(ctx)
+
+		g.Go(func() error {
+			return runPortScan("Port scanning", parsePorts(cfg.PortRange))
+		})
+		g.Go(func() error {
+			return runSubdomains("Enumerating subdomains")
+		})
+		g.Go(func() error {
+			return runProbe("Checking headers and tech", []string{"headers", "misconfig", "tech", "detect"})
+		})
+		g.Go(func() error {
+			if services.Discoverer == nil {
+				return nil
+			}
+			emitter.progress("Crawling + mining parameters")
+			findings, params, err := services.Discoverer.CrawlAndMine(
+				gctx, cfg.Target, core.NormalizeCrawlDepth(cfg.Depth),
+				core.MiningConfig{
+					Depth:   core.NormalizeCrawlDepth(cfg.Depth),
+					Threads: firstPositiveInt(cfg.Threads, 10),
+					Timeout: firstPositiveInt(cfg.Timeout, 10),
+					MineJS:  true, MineForms: true, MineJSON: true, MinePath: true,
+				},
+				func(f core.CrawlFinding) {
+					emitter.crawl(f)
+					if f.URL != "" {
+						crawlMu.Lock()
+						crawledURLs = append(crawledURLs, f.URL)
+						crawlMu.Unlock()
+					}
+				},
+			)
+			if err != nil {
+				addErr("Crawl+Mine", err)
+			}
+			if findings != nil {
+				result.CrawlFindings = append(result.CrawlFindings, findings...)
+			}
+			if params != nil {
+				result.Params = params
+				for _, name := range sortedParamNames(params.Params) {
+					emitter.param(name, params.Params[name])
+				}
+			}
+			return nil
+		})
+
+		if err := g.Wait(); err != nil {
 			return result, err
 		}
-		if err := runPortScan("Port scanning", parsePorts(cfg.PortRange)); err != nil {
-			return result, err
-		}
-		if err := runProbe("Checking headers and tech", []string{"headers", "misconfig", "tech", "detect"}); err != nil {
-			return result, err
-		}
-		if err := runParamMining("Mining parameters", core.NormalizeCrawlDepth(cfg.Depth)); err != nil {
-			return result, err
-		}
+
+		// ── Level 2: depends on crawled URLs ──────────────────
 		jsTargets := uniqueOrderedStrings(append([]string{cfg.Target}, crawledURLs...))
 		if err := runJSAnalysis("Analyzing JavaScript", jsTargets); err != nil {
 			return result, err
@@ -1140,18 +1160,20 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 		if err := runAPI("Discovering API surface", crawledURLs); err != nil {
 			return result, err
 		}
-		if err := runSubdomains("Enumerating subdomains"); err != nil {
-			return result, err
-		}
 
 	case "quick_recon":
-		if err := runPortScan("Port scanning", parsePorts(cfg.PortRange)); err != nil {
-			return result, err
-		}
-		if _, err := runCrawl(min(core.NormalizeCrawlDepth(cfg.Depth), 2)); err != nil {
-			return result, err
-		}
-		if err := runProbe("Checking headers and tech", []string{"headers", "misconfig", "tech", "detect"}); err != nil {
+		g, _ := errgroup.WithContext(ctx)
+		g.Go(func() error {
+			return runPortScan("Port scanning", parsePorts(cfg.PortRange))
+		})
+		g.Go(func() error {
+			_, err := runCrawl(min(core.NormalizeCrawlDepth(cfg.Depth), 2))
+			return err
+		})
+		g.Go(func() error {
+			return runProbe("Checking headers and tech", []string{"headers", "misconfig", "tech", "detect"})
+		})
+		if err := g.Wait(); err != nil {
 			return result, err
 		}
 
@@ -1182,11 +1204,37 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 		}
 
 	case "sqli_hunt":
-		if _, err := runCrawl(min(core.NormalizeCrawlDepth(cfg.Depth), 2)); err != nil {
-			return result, err
-		}
-		if err := runParamMining("Mining parameters", core.NormalizeCrawlDepth(cfg.Depth)); err != nil {
-			return result, err
+		// Use CrawlAndMine pipeline to avoid double-crawl
+		if services.Discoverer != nil {
+			emitter.progress("Crawling + mining parameters")
+			findings, params, err := services.Discoverer.CrawlAndMine(
+				ctx, cfg.Target, min(core.NormalizeCrawlDepth(cfg.Depth), 2),
+				core.MiningConfig{
+					Depth:   core.NormalizeCrawlDepth(cfg.Depth),
+					Threads: firstPositiveInt(cfg.Threads, 10),
+					Timeout: firstPositiveInt(cfg.Timeout, 10),
+					MineJS:  true, MineForms: true, MineJSON: true, MinePath: true,
+				},
+				func(f core.CrawlFinding) { emitter.crawl(f) },
+			)
+			if err != nil {
+				addErr("Crawl+Mine", err)
+			}
+			if findings != nil {
+				for _, f := range findings {
+					emitter.crawl(f)
+				}
+				result.CrawlFindings = append(result.CrawlFindings, findings...)
+			}
+			if params != nil {
+				result.Params = params
+				for _, name := range sortedParamNames(params.Params) {
+					emitter.param(name, params.Params[name])
+				}
+			}
+			if err := checkCtx(); err != nil {
+				return result, err
+			}
 		}
 		if err := runProbe("Hunting SQLi", []string{"sqli"}); err != nil {
 			return result, err
@@ -1198,13 +1246,18 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 		}
 
 	default:
-		if err := runPortScan("Port scanning", parsePorts(cfg.PortRange)); err != nil {
-			return result, err
-		}
-		if _, err := runCrawl(cfg.Depth); err != nil {
-			return result, err
-		}
-		if err := runProbe("Checking headers and tech", []string{"headers", "misconfig"}); err != nil {
+		g, _ := errgroup.WithContext(ctx)
+		g.Go(func() error {
+			return runPortScan("Port scanning", parsePorts(cfg.PortRange))
+		})
+		g.Go(func() error {
+			_, err := runCrawl(cfg.Depth)
+			return err
+		})
+		g.Go(func() error {
+			return runProbe("Checking headers and tech", []string{"headers", "misconfig"})
+		})
+		if err := g.Wait(); err != nil {
 			return result, err
 		}
 	}

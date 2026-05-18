@@ -18,6 +18,16 @@ func (fakeFullSurfaceDiscoverer) MineParams(ctx context.Context, targetURL strin
 	return &core.ParamDiscoveryResult{Params: map[string]core.ParamDetail{}}, nil
 }
 
+func (fakeFullSurfaceDiscoverer) CrawlAndMine(ctx context.Context, startURL string, maxDepth int, cfg core.MiningConfig, onFinding func(core.CrawlFinding)) ([]core.CrawlFinding, *core.ParamDiscoveryResult, error) {
+	findings, _ := fakeFullSurfaceDiscoverer{}.Crawl(ctx, startURL, maxDepth)
+	if onFinding != nil {
+		for _, f := range findings {
+			onFinding(f)
+		}
+	}
+	return findings, &core.ParamDiscoveryResult{Params: map[string]core.ParamDetail{}}, nil
+}
+
 func (fakeFullSurfaceDiscoverer) AnalyzeJS(ctx context.Context, pageURL string) (*core.JSAnalysisResult, error) {
 	return &core.JSAnalysisResult{}, nil
 }
