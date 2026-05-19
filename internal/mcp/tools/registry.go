@@ -711,6 +711,7 @@ func handlePortScan(ctx context.Context, args map[string]interface{}, svc *Servi
 		Threads:    getInt(args, "threads", threadDefault),
 		TimeoutMs:  getInt(args, "timeout", timeoutDefault) * 1000,
 		Rate:       getFloat64(args, "rate", 0),
+		Retries:    1,
 		SynMode:    getBool(args, "syn_mode"),
 		Randomize:  getBoolDefault(args, "randomize", true),
 		BannerGrab: true,

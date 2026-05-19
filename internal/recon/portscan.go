@@ -151,7 +151,7 @@ type scanRequest struct {
 	Threads          int     `json:"threads"`
 	TimeoutMs        int     `json:"timeout_ms"`
 	Rate             float64 `json:"rate"`
-	Retries          int     `json:"retries"`
+	Retries          int     `json:"retries,omitempty"`
 	Randomize        bool    `json:"randomize"`
 	SynMode          bool    `json:"syn_mode"`
 	BannerGrab       bool    `json:"banner_grab"`

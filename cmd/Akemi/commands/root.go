@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +18,9 @@ import (
 	ui "Akemi/internal/cli/ui"
 	core "Akemi/internal/core"
 	"Akemi/internal/engagement"
+	"Akemi/internal/project"
 	"Akemi/internal/service"
+	"Akemi/internal/session"
 	"Akemi/internal/tui/dashboard"
 
 	"github.com/spf13/cobra"
@@ -25,12 +29,14 @@ import (
 
 // Services holds all initialized service instances.
 type Services struct {
-	Scanner    *service.ScannerService
-	Discovery  *service.DiscoveryService
-	Vuln       *service.VulnService
-	Subdomain  *service.SubdomainService
-	Reporting  *service.ReportingService
-	MCPContext engagement.ContextStore
+	Project      *project.Project
+	SessionState *session.State
+	Scanner      *service.ScannerService
+	Discovery    *service.DiscoveryService
+	Vuln         *service.VulnService
+	Subdomain    *service.SubdomainService
+	Reporting    *service.ReportingService
+	MCPContext   engagement.ContextStore
 }
 
 var (
@@ -45,6 +51,8 @@ var (
 	rootTimeout     int
 	rootOutputDir   string
 	rootAkemiImport string
+	rootProjectPath string
+	rootNoProject   bool
 )
 
 // RootCmd is the base Akemi command. When run without subcommands,
@@ -83,6 +91,8 @@ func init() {
 	RootCmd.PersistentFlags().IntVarP(&rootTimeout, "timeout", "t", 10, "Network timeout in seconds")
 	RootCmd.PersistentFlags().StringVar(&rootOutputDir, "output-dir", ".", "Output directory for reports and results")
 	RootCmd.PersistentFlags().StringVar(&rootAkemiImport, "import-akemi", "", "Load a .akemi archive into the interactive dashboard")
+	RootCmd.PersistentFlags().StringVar(&rootProjectPath, "project", "", "Open or create an Akemi project at the given path")
+	RootCmd.PersistentFlags().BoolVar(&rootNoProject, "no-project", false, "Skip project selection, use single-session mode")
 
 	// Legacy flags on root command for backward compatibility
 	RootCmd.Flags().StringP("url", "u", "", "Target URL")
@@ -140,9 +150,12 @@ func init() {
 	RootCmd.AddCommand(newAgentCmd())
 	RootCmd.AddCommand(newInteractiveCmd())
 	RootCmd.AddCommand(newArchiveCmd())
+	RootCmd.AddCommand(newProjectCmd())
 }
 
 // getServices lazily initializes and returns the service container.
+// If a project path was provided via --project or auto-detected, it opens
+// the project and wires it into the services.
 func getServices() *Services {
 	if svc == nil {
 		logger := core.Logger()
@@ -152,18 +165,96 @@ func getServices() *Services {
 			core.SetLogger(logger)
 		}
 
+		proj := resolveProject()
+
+		// Determine the effective output directory.
+		outputDir := rootOutputDir
+		if proj != nil {
+			outputDir = proj.ResolvePath("reports")
+		}
+
 		vulnSvc, _ := service.NewVulnService(logger, "./probes")
 
+		// Wire session state. When a project is loaded, its database
+		// serves as the persistent store for completed operations.
+		var sessionStore session.Store
+		if proj != nil && proj.DB != nil {
+			sessionStore = proj.DB
+		}
+		sessionState := session.New(sessionStore)
+
 		svc = &Services{
-			Scanner:    service.NewScannerService(logger),
-			Discovery:  service.NewDiscoveryService(logger),
-			Vuln:       vulnSvc,
-			Subdomain:  service.NewSubdomainService(logger),
-			Reporting:  service.NewReportingService(logger, rootOutputDir),
-			MCPContext: engagement.NewMemoryContextStore(),
+			Project:      proj,
+			SessionState: sessionState,
+			Scanner:      service.NewScannerService(logger),
+			Discovery:    service.NewDiscoveryService(logger),
+			Vuln:         vulnSvc,
+			Subdomain:    service.NewSubdomainService(logger),
+			Reporting:    service.NewReportingService(logger, outputDir),
+			MCPContext:   engagement.NewMemoryContextStore(),
 		}
 	}
 	return svc
+}
+
+// resolveProject determines which project to use based on flags, auto-detection,
+// or defaults. It returns nil for single-session mode.
+func resolveProject() *project.Project {
+	// 1. Explicit --project flag takes highest priority.
+	if rootProjectPath != "" {
+		proj, err := project.OpenProject(rootProjectPath)
+		if err != nil {
+			// If it doesn't exist, try creating it as a convenience.
+			name := filepath.Base(rootProjectPath)
+			proj, err = project.CreateProject(rootProjectPath, name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[!] Project error: %v — falling back to single-session mode\n", err)
+				return nil
+			}
+		}
+		return proj
+	}
+
+	// 2. --no-project / --single explicitly requests single-session mode.
+	if rootNoProject {
+		return nil
+	}
+
+	// 3. Auto-detect: walk up from CWD looking for akemi.project.toml.
+	proj, err := project.DetectProject("")
+	if err == nil && proj != nil {
+		return proj
+	}
+
+	// 4. Default: single-session mode (current behavior).
+	return nil
+}
+
+// printProjectBanner displays project information when launching the TUI.
+func printProjectBanner(proj *project.Project) {
+	if proj == nil {
+		return
+	}
+	home, _ := os.UserHomeDir()
+	displayPath := proj.Root
+	if home != "" {
+		if rel, err := filepath.Rel(home, proj.Root); err == nil && !strings.HasPrefix(rel, "..") {
+			displayPath = "~" + string(filepath.Separator) + rel
+		}
+	}
+
+	fmt.Printf("\n📁 Project: %s\n", proj.DisplayName())
+	fmt.Printf("   Path:     %s\n", displayPath)
+
+	if len(proj.Targets()) > 0 {
+		fmt.Printf("   Targets:  %s\n", strings.Join(proj.Targets(), ", "))
+	}
+
+	stats, err := proj.Stats()
+	if err == nil && stats != nil && stats.TotalSessions > 0 {
+		fmt.Printf("   Sessions: %d | Findings: %d\n", stats.TotalSessions, stats.TotalFindings)
+	}
+	fmt.Println()
 }
 
 // =============================================================================
@@ -214,8 +305,17 @@ func runRoot(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		s := getServices()
+
+		// Print project context if a project is loaded.
+		printProjectBanner(s.Project)
+
 		dashSvc := dashboard.ConvertServices(s.Scanner, s.Discovery, s.Vuln, s.Subdomain, s.Reporting)
 		dashSvc.ArchiveDir = rootOutputDir
+		dashSvc.SessionState = s.SessionState
+		if s.Project != nil {
+			dashSvc.ArchiveDir = s.Project.ResolvePath("archives")
+			dashSvc.Project = s.Project
+		}
 		dashSvc.InitialArchive = initialArchive
 		dashSvc.MCPContext = s.MCPContext
 		dashSvc.AssistantLoad = buildDashboardAssistantLoad(s, core.Logger())

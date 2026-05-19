@@ -63,8 +63,15 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Launching Akemi Terminal Interface...")
 
+	// Print project context if loaded.
+	printProjectBanner(svc.Project)
+
 	dashSvc := dashboard.ConvertServices(svc.Scanner, svc.Discovery, svc.Vuln, svc.Subdomain, svc.Reporting)
 	dashSvc.ArchiveDir = rootOutputDir
+	if svc.Project != nil {
+		dashSvc.ArchiveDir = svc.Project.ResolvePath("archives")
+		dashSvc.Project = svc.Project
+	}
 	dashSvc.InitialArchive = initialArchive
 	dashSvc.MCPContext = svc.MCPContext
 	dashSvc.AssistantLoad = buildDashboardAssistantLoad(svc, core.Logger())

@@ -124,13 +124,13 @@ func (dp *DiscoveryPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(msg.Phase) != "" {
 			dp.phase = msg.Phase
 		}
-		currentEmpty := len(dp.sections[dp.activeTab].Items) == 0
-		if dp.AddItemWithKey(msg.Section, msg.Key, msg.Item) && currentEmpty {
-			if idx := dp.sectionIndex(msg.Section); idx >= 0 {
-				dp.activeTab = idx
-				dp.scrollY = 0
-				dp.filteredItems = nil
-			}
+		// Auto-switch to a section when it receives its first item
+		sectionIdx := dp.sectionIndex(msg.Section)
+		wasEmpty := sectionIdx >= 0 && len(dp.sections[sectionIdx].Items) == 0
+		if dp.AddItemWithKey(msg.Section, msg.Key, msg.Item) && wasEmpty {
+			dp.activeTab = sectionIdx
+			dp.scrollY = 0
+			dp.filteredItems = nil
 		}
 		if dp.filterMode {
 			dp.applyFilter()

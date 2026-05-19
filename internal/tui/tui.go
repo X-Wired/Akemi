@@ -612,7 +612,7 @@ func (m *Model) runScanCmd() tea.Cmd {
 
 			scanReq := core.ScanRequest{
 				Host: m.target, Ports: []int{80, 443, 8080, 8443},
-				Threads: 100, TimeoutMs: 3000, BannerGrab: true,
+				Threads: 100, TimeoutMs: 3000, Retries: 1, BannerGrab: true,
 				SuppressOutput: true,
 			}
 			if m.scanner != nil {

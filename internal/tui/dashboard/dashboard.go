@@ -23,6 +23,8 @@ import (
 	"Akemi/internal/dothound"
 	"Akemi/internal/engagement"
 	proxy "Akemi/internal/platform/proxy"
+	"Akemi/internal/project"
+	"Akemi/internal/session"
 	"Akemi/internal/surface"
 	"Akemi/internal/toolbridge"
 
@@ -55,6 +57,8 @@ type DashboardServices struct {
 	SubEnumerator core.SubEnumerator
 	Reporter      core.Reporter
 
+	Project        *project.Project
+	SessionState   *session.State
 	ArchiveDir     string
 	InitialArchive *akemiarchive.File
 	MCPContext     engagement.ContextStore
@@ -427,25 +431,37 @@ func (d *Dashboard) handleGlobalKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 
 func (d *Dashboard) updatePanels(msg tea.Msg) []tea.Cmd {
 	cmds := make([]tea.Cmd, 0, 4)
-	if model, cmd := d.target.Update(msg); cmd != nil {
-		cmds = append(cmds, cmd)
-	} else if tp, ok := model.(*TargetPanel); ok {
-		d.target = tp
+	if model, cmd := d.target.Update(msg); true {
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if tp, ok := model.(*TargetPanel); ok {
+			d.target = tp
+		}
 	}
-	if model, cmd := d.discovery.Update(msg); cmd != nil {
-		cmds = append(cmds, cmd)
-	} else if dp, ok := model.(*DiscoveryPanel); ok {
-		d.discovery = dp
+	if model, cmd := d.discovery.Update(msg); true {
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if dp, ok := model.(*DiscoveryPanel); ok {
+			d.discovery = dp
+		}
 	}
-	if model, cmd := d.system.Update(msg); cmd != nil {
-		cmds = append(cmds, cmd)
-	} else if sp, ok := model.(*SystemPanel); ok {
-		d.system = sp
+	if model, cmd := d.system.Update(msg); true {
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if sp, ok := model.(*SystemPanel); ok {
+			d.system = sp
+		}
 	}
-	if model, cmd := d.agent.Update(msg); cmd != nil {
-		cmds = append(cmds, cmd)
-	} else if ap, ok := model.(*AgentPanel); ok {
-		d.agent = ap
+	if model, cmd := d.agent.Update(msg); true {
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if ap, ok := model.(*AgentPanel); ok {
+			d.agent = ap
+		}
 	}
 	return cmds
 }
@@ -768,6 +784,7 @@ func (d *Dashboard) runScanCmd(ctx context.Context, cfg ScanConfig) tea.Cmd {
 }
 
 type scanEmitter struct {
+	mu     sync.Mutex
 	send   func(tea.Msg)
 	latest ScanProgressMsg
 }
@@ -777,81 +794,114 @@ func newScanEmitter(send func(tea.Msg)) *scanEmitter {
 }
 
 func (e *scanEmitter) progress(stage string) {
+	e.mu.Lock()
 	e.latest.Phase = stage
-	e.emit(e.latest)
+	msg := e.latest
+	e.mu.Unlock()
+	e.emit(msg)
 }
 
 func (e *scanEmitter) port(port core.PortResult) {
+	e.mu.Lock()
 	e.latest.Ports++
-	e.emit(DiscoveryItemMsg{Section: "Ports", Key: fmt.Sprintf("%d", port.Port), Item: formatPortResult(port), Phase: e.latest.Phase})
-	e.emit(e.latest)
+	phase := e.latest.Phase
+	msg := e.latest
+	e.mu.Unlock()
+	e.emit(DiscoveryItemMsg{Section: "Ports", Key: fmt.Sprintf("%d", port.Port), Item: formatPortResult(port), Phase: phase})
+	e.emit(msg)
 }
 
 func (e *scanEmitter) crawl(f core.CrawlFinding) {
+	e.mu.Lock()
 	e.latest.URLs++
-	e.emit(DiscoveryItemMsg{Section: "URLs", Key: f.URL, Item: formatCrawlFinding(f), Phase: e.latest.Phase})
-	e.emit(e.latest)
+	phase := e.latest.Phase
+	msg := e.latest
+	e.mu.Unlock()
+	e.emit(DiscoveryItemMsg{Section: "URLs", Key: f.URL, Item: formatCrawlFinding(f), Phase: phase})
+	e.emit(msg)
 }
 
 func (e *scanEmitter) finding(f core.VulnFinding) {
+	e.mu.Lock()
 	e.latest.Findings++
+	msg := e.latest
+	e.mu.Unlock()
 	e.emit(discoveryItemForFinding(f))
-	e.emit(e.latest)
+	e.emit(msg)
 }
 
 func (e *scanEmitter) param(name string, detail core.ParamDetail) {
+	e.mu.Lock()
 	e.latest.Params++
-	e.emit(DiscoveryItemMsg{Section: "Params", Key: name, Item: formatParamDetail(name, detail), Phase: e.latest.Phase})
-	e.emit(e.latest)
+	phase := e.latest.Phase
+	msg := e.latest
+	e.mu.Unlock()
+	e.emit(DiscoveryItemMsg{Section: "Params", Key: name, Item: formatParamDetail(name, detail), Phase: phase})
+	e.emit(msg)
 }
 
 func (e *scanEmitter) apiParameter(param core.APIParameterFinding) {
 	key, item := formatAPIParameter(param)
+	e.mu.Lock()
 	e.latest.Params++
-	e.emit(DiscoveryItemMsg{Section: "Params", Key: key, Item: item, Phase: e.latest.Phase})
-	e.emit(e.latest)
+	phase := e.latest.Phase
+	msg := e.latest
+	e.mu.Unlock()
+	e.emit(DiscoveryItemMsg{Section: "Params", Key: key, Item: item, Phase: phase})
+	e.emit(msg)
 }
 
 func (e *scanEmitter) js(pageURL string, js *core.JSAnalysisResult) {
 	if js == nil {
 		return
 	}
+	e.mu.Lock()
+	e.latest.JSFiles += len(js.ScriptURLs)
+	e.latest.Secrets += len(js.Secrets)
+	e.latest.Params += len(js.HiddenParams)
+	phase := e.latest.Phase
+	msg := e.latest
+	e.mu.Unlock()
 	for _, scriptURL := range js.ScriptURLs {
-		e.latest.JSFiles++
-		e.emit(DiscoveryItemMsg{Section: "JS Files", Key: scriptURL, Item: scriptURL, Phase: e.latest.Phase})
+		e.emit(DiscoveryItemMsg{Section: "JS Files", Key: scriptURL, Item: scriptURL, Phase: phase})
 	}
 	for _, secret := range js.Secrets {
-		e.latest.Secrets++
-		e.emit(DiscoveryItemMsg{Section: "Secrets", Key: secret.Value + secret.SourceURL, Item: formatSecretFinding(secret), Phase: e.latest.Phase})
+		e.emit(DiscoveryItemMsg{Section: "Secrets", Key: secret.Value + secret.SourceURL, Item: formatSecretFinding(secret), Phase: phase})
 	}
 	for _, param := range js.HiddenParams {
-		e.latest.Params++
-		e.emit(DiscoveryItemMsg{Section: "Params", Key: param, Item: fmt.Sprintf("?%s= (js)", param), Phase: e.latest.Phase})
+		e.emit(DiscoveryItemMsg{Section: "Params", Key: param, Item: fmt.Sprintf("?%s= (js)", param), Phase: phase})
 	}
-	e.emit(e.latest)
+	e.emit(msg)
 }
 
 func (e *scanEmitter) api(api *core.APISurfaceResult) {
 	if api == nil {
 		return
 	}
+	e.mu.Lock()
+	e.latest.Endpoints += len(api.APIEndpoints) + len(api.APISpecs)
+	phase := e.latest.Phase
+	msg := e.latest
+	e.mu.Unlock()
 	for _, ep := range api.APIEndpoints {
 		key, item := formatAPIEndpoint(ep)
-		e.latest.Endpoints++
-		e.emit(DiscoveryItemMsg{Section: "Endpoints", Key: key, Item: item, Phase: e.latest.Phase})
+		e.emit(DiscoveryItemMsg{Section: "Endpoints", Key: key, Item: item, Phase: phase})
 	}
 	for _, spec := range api.APISpecs {
 		key, item := formatAPISpec(spec)
-		e.latest.Endpoints++
-		e.emit(DiscoveryItemMsg{Section: "Endpoints", Key: key, Item: item, Phase: e.latest.Phase})
+		e.emit(DiscoveryItemMsg{Section: "Endpoints", Key: key, Item: item, Phase: phase})
 	}
-	e.emit(e.latest)
+	e.emit(msg)
 }
 
 func (e *scanEmitter) subdomain(sub core.SubdomainResult) {
+	e.mu.Lock()
 	e.latest.Subdomains++
-	e.emit(DiscoveryItemMsg{Section: "Subdomains", Key: sub.Name, Item: formatSubdomainResult(sub), Phase: e.latest.Phase})
-	e.emit(e.latest)
+	phase := e.latest.Phase
+	msg := e.latest
+	e.mu.Unlock()
+	e.emit(DiscoveryItemMsg{Section: "Subdomains", Key: sub.Name, Item: formatSubdomainResult(sub), Phase: phase})
+	e.emit(msg)
 }
 
 func (e *scanEmitter) emit(msg tea.Msg) {
@@ -904,6 +954,8 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 	addErr := func(stage string, err error) {
 		if err != nil {
 			result.Errors = append(result.Errors, surface.StageError{Stage: stage, Error: err.Error()})
+			// Surface the error in real-time via the phase display
+			emitter.progress(fmt.Sprintf("%s error: %s", stage, err.Error()))
 		}
 	}
 
@@ -918,6 +970,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			Threads:        firstPositiveInt(cfg.Threads, 200),
 			TimeoutMs:      firstPositiveInt(cfg.Timeout, 10) * 1000,
 			Rate:           1000,
+			Retries:        1,
 			Randomize:      true,
 			BannerGrab:     true,
 			SuppressOutput: true,

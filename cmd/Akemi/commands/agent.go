@@ -801,6 +801,7 @@ func buildScanRequest(target string, ports []int, args map[string]interface{}) c
 		Ports:      ports,
 		Threads:    200,
 		TimeoutMs:  3000,
+		Retries:    1,
 		BannerGrab: true,
 	}
 }

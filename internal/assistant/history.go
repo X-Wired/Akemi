@@ -78,12 +78,24 @@ func NewFileHistoryStore(path string) *FileHistoryStore {
 }
 
 // DefaultHistoryPath returns the workspace assistant history path.
+// When outputDir is empty, it defaults to the current working directory.
 func DefaultHistoryPath(outputDir string) string {
 	outputDir = strings.TrimSpace(outputDir)
 	if outputDir == "" {
 		outputDir = "."
 	}
 	return filepath.Join(outputDir, ".akemi", "assistant-history.json")
+}
+
+// ProjectHistoryPath returns the assistant history path scoped to an Akemi
+// project's state directory. When projectRoot is empty, it falls back to
+// DefaultHistoryPath with the current working directory.
+func ProjectHistoryPath(projectRoot string) string {
+	projectRoot = strings.TrimSpace(projectRoot)
+	if projectRoot == "" {
+		return DefaultHistoryPath(".")
+	}
+	return filepath.Join(projectRoot, ".akemi", "assistant-history.json")
 }
 
 // Path returns the configured store path.

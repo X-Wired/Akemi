@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -206,6 +207,98 @@ func DefaultRunFilename(target string) string {
 		target = "akemi-run"
 	}
 	return target + ".akemi"
+}
+
+// ArchiveSummary is a lightweight descriptor for one .akemi archive, suitable
+// for listing in the TUI or CLI without decoding the full file.
+type ArchiveSummary struct {
+	Path       string    `json:"path"`
+	Target     string    `json:"target"`
+	Intent     string    `json:"intent,omitempty"`
+	ExportedAt time.Time `json:"exported_at"`
+	SizeBytes  int64     `json:"size_bytes"`
+}
+
+// ListArchives scans a directory for .akemi files and returns lightweight
+// summaries without decoding full archive contents. The directory is scanned
+// non-recursively. Returns an empty slice if the directory does not exist.
+func ListArchives(dir string) ([]ArchiveSummary, error) {
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read archives directory: %w", err)
+	}
+
+	var summaries []ArchiveSummary
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".akemi") {
+			continue
+		}
+
+		fullPath := filepath.Join(dir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		summary := ArchiveSummary{
+			Path:      fullPath,
+			SizeBytes: info.Size(),
+		}
+
+		// Attempt a quick metadata-only read to populate target/intent.
+		if f, err := readMetadata(fullPath); err == nil && f != nil {
+			summary.Target = f.Config.Target
+			summary.Intent = f.Config.Intent
+			summary.ExportedAt = f.ExportedAt
+		}
+
+		summaries = append(summaries, summary)
+	}
+
+	// Sort by exported time descending (newest first).
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].ExportedAt.After(summaries[j].ExportedAt)
+	})
+
+	return summaries, nil
+}
+
+// readMetadata reads only the envelope fields of a .akemi archive to avoid
+// loading full result payloads into memory during listing operations.
+func readMetadata(path string) (*File, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if stat.Size() > MaxArchiveBytes {
+		return nil, fmt.Errorf("archive too large for metadata read")
+	}
+
+	// Decode only the metadata fields.
+	var f File
+	dec := json.NewDecoder(io.LimitReader(file, MaxArchiveBytes+1))
+	if err := dec.Decode(&f); err != nil {
+		return nil, err
+	}
+	if err := f.Validate(); err != nil {
+		return nil, err
+	}
+	return &f, nil
 }
 
 func (f *File) computeCounts() map[string]int {
