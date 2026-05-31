@@ -292,7 +292,29 @@ func runRoot(cmd *cobra.Command, args []string) error {
 
 	urlFlag, _ := cmd.Flags().GetString("url")
 	if urlFlag == "" && !hasAnyActiveFlag(cmd) {
-		// No URL and no specific action — launch the interactive dashboard
+		// No URL and no specific action — launch the interactive dashboard.
+		//
+		// If the user didn't specify --project or --no-project, show the
+		// interactive project selection screen first.
+		if rootProjectPath == "" && !rootNoProject {
+			if !rootQuiet {
+				ui.PrintASCIIArtNeon()
+			}
+			result := dashboard.RunProjectSelector()
+			if result.Cancelled {
+				return nil
+			}
+			if result.Project != nil {
+				rootProjectPath = result.Project.Root
+				_ = result.Project.Close() // will be reopened by resolveProject
+			}
+			if result.SingleSession {
+				rootNoProject = true
+			}
+			// Clear the cached services so getServices picks up the new project.
+			svc = nil
+		}
+
 		if !rootQuiet {
 			ui.PrintASCIIArtNeon()
 		}

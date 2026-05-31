@@ -107,16 +107,11 @@ func (dp *DiscoveryPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return dp.handleMouse(msg)
 
 	case ScanProgressMsg:
-		dp.totalSubdomains = msg.Subdomains
-		dp.totalPorts = msg.Ports
-		dp.totalURLs = msg.URLs
-		dp.totalEndpoints = msg.Endpoints
-		dp.totalSecrets = msg.Secrets
-		dp.totalParams = msg.Params
-		dp.totalJSFiles = msg.JSFiles
-		dp.totalFindings = msg.Findings
+		// Only update the phase text (transient per-scan label).
+		// Do NOT overwrite cumulative totals -- those are maintained
+		// by AddItemWithKey and refreshTotalsFromSections, which
+		// count across all scans, not just the current one.
 		dp.phase = msg.Phase
-		dp.syncCounts()
 		dp.updateViewport()
 		return dp, nil
 
