@@ -413,7 +413,8 @@ func (m *Model) renderResults() string {
 func (m *Model) renderFindings() string {
 	var sb strings.Builder
 
-	sb.WriteString(titleStyle.Render("Findings & Templates"))
+	sb.WriteString(titleStyle.Render("Findings"))
+	sb.WriteString(fmt.Sprintf(dimStyle.Render(" (%d total, ↑/↓ to select)"), len(m.findings)))
 	sb.WriteString("\n\n")
 
 	sb.WriteString(m.findingsTable.View())
@@ -421,7 +422,7 @@ func (m *Model) renderFindings() string {
 	sb.WriteString(m.viewport.View())
 
 	sb.WriteString("\n")
-	sb.WriteString(helpStyle.Render("↑/↓ navigate  •  Esc back"))
+	sb.WriteString(helpStyle.Render("↑/↓ select finding  •  detail pane below  •  Esc back"))
 
 	return sb.String()
 }
@@ -449,32 +450,49 @@ func (m *Model) renderReport() string {
 // =============================================================================
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q", "ctrl+c":
+	key := msg.String()
+
+	// Global quit keys
+	if key == "q" || key == "ctrl+c" || key == "ctrl+x" {
 		if m.screen == ScreenRunning {
 			return m, tea.Quit
 		}
 		m.quitting = true
 		return m, tea.Quit
+	}
 
+	// Global escape — back to menu
+	if key == "esc" {
+		if m.screen != ScreenMenu {
+			m.screen = ScreenMenu
+			m.inputMode = false
+		}
+		return m, nil
+	}
+
+	// When on findings screen, forward navigation keys to the table
+	if m.screen == ScreenFindings {
+		switch key {
+		case "up", "down", "k", "j", "pgup", "pgdown", "u", "d", "home", "end", "g", "G":
+			m.findingsTable, _ = m.findingsTable.Update(msg)
+			m.updateFindingDetail()
+		}
+		return m, nil
+	}
+
+	switch key {
 	case "up", "k":
-		if m.cursor > 0 {
+		if m.screen == ScreenMenu && m.cursor > 0 {
 			m.cursor--
 		}
 
 	case "down", "j":
-		if m.cursor < len(m.menuItems)-1 {
+		if m.screen == ScreenMenu && m.cursor < len(m.menuItems)-1 {
 			m.cursor++
 		}
 
 	case "enter":
 		return m.handleEnter()
-
-	case "esc":
-		if m.screen != ScreenMenu {
-			m.screen = ScreenMenu
-			m.inputMode = false
-		}
 
 	case "t":
 		if m.screen == ScreenScanConfig {
@@ -487,6 +505,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.screen == ScreenResults {
 			m.screen = ScreenFindings
 			m.updateFindingsTable()
+			m.updateFindingDetail()
 		}
 
 	case "r":
@@ -635,6 +654,8 @@ func (m *Model) runScanCmd() tea.Cmd {
 				probeCfg := core.ProbeConfig{
 					Threads: 1, Timeout: 10, UseTemplates: true,
 					TemplateTags: []string{"headers", "misconfig"},
+					Fingerprint:  true,
+					Prioritize:   true,
 				}
 				if f, err := m.prober.Probe(ctx, m.target, probeCfg); err == nil {
 					findings = append(findings, f...)
@@ -646,6 +667,8 @@ func (m *Model) runScanCmd() tea.Cmd {
 				techCfg := core.ProbeConfig{
 					Threads: 1, Timeout: 10, UseTemplates: true,
 					TemplateTags: []string{"tech", "detect"},
+					Fingerprint:  true,
+					Prioritize:   true,
 				}
 				if f, err := m.prober.Probe(ctx, m.target, techCfg); err == nil {
 					findings = append(findings, f...)
@@ -691,6 +714,8 @@ func (m *Model) runScanCmd() tea.Cmd {
 				probeCfg := core.ProbeConfig{
 					Threads: 5, Timeout: 10, UseTemplates: true,
 					TemplateTags: []string{"sqli"},
+					Fingerprint:  true,
+					Prioritize:   true,
 				}
 				if f, err := m.prober.Probe(ctx, m.target, probeCfg); err == nil {
 					findings = append(findings, f...)
@@ -700,9 +725,33 @@ func (m *Model) runScanCmd() tea.Cmd {
 
 		// Vulnerability assessment
 		if m.intent == "vuln_assessment" {
+			// 1. Quick port scan for context
+			scanReq := core.ScanRequest{
+				Host: m.target, Ports: []int{80, 443, 8080, 8443, 3000, 5000, 8000, 9090},
+				Threads: 100, TimeoutMs: 3000, Retries: 1, BannerGrab: true,
+				SuppressOutput: true,
+			}
+			if m.scanner != nil {
+				if result, err := m.scanner.Scan(ctx, scanReq); err == nil {
+					ports = result.OpenPorts
+				}
+			}
+
+			// 2. Crawl for URL discovery
+			if m.discoverer != nil {
+				if crawlResult, err := m.discoverer.Crawl(ctx, m.target, 2); err == nil {
+					for _, f := range crawlResult {
+						urls = append(urls, f.URL)
+					}
+				}
+			}
+
+			// 3. Run full vulnerability probe
 			if m.prober != nil {
 				probeCfg := core.ProbeConfig{
-					Threads: 5, Timeout: 10, UseTemplates: true,
+					Threads: 10, Timeout: 15, UseTemplates: true,
+					Fingerprint: true,
+					Prioritize:  true,
 				}
 				if f, err := m.prober.Probe(ctx, m.target, probeCfg); err == nil {
 					findings = append(findings, f...)
@@ -736,7 +785,49 @@ func (m *Model) updateFindingsTable() {
 	m.findingsTable.SetRows(rows)
 }
 
+func (m *Model) updateFindingDetail() {
+	idx := m.findingsTable.Cursor()
+	if idx < 0 || idx >= len(m.findings) {
+		m.viewport.SetContent("No finding selected.")
+		return
+	}
+
+	f := m.findings[idx]
+	var sb strings.Builder
+	sevStyle := getSeverityStyle(f.Severity)
+
+	sb.WriteString(titleStyle.Render(f.Name))
+	sb.WriteString("\n\n")
+	sb.WriteString(fmt.Sprintf("Severity:     %s\n", sevStyle.Render(f.Severity)))
+	sb.WriteString(fmt.Sprintf("ID:           %s\n", dimStyle.Render(f.ID)))
+	sb.WriteString(fmt.Sprintf("Target:       %s\n", accentStyle.Render(f.Target)))
+	sb.WriteString("\n")
+	sb.WriteString(warnStyle.Render("Description:"))
+	sb.WriteString("\n")
+	sb.WriteString(f.Description)
+	sb.WriteString("\n\n")
+
+	if f.Evidence != "" {
+		sb.WriteString(warnStyle.Render("Evidence:"))
+		sb.WriteString("\n")
+		sb.WriteString(dimStyle.Render(f.Evidence))
+		sb.WriteString("\n\n")
+	}
+
+	if f.Remediation != "" {
+		sb.WriteString(successStyle.Render("Remediation:"))
+		sb.WriteString("\n")
+		sb.WriteString(f.Remediation)
+		sb.WriteString("\n")
+	}
+
+	m.viewport.SetContent(sb.String())
+}
+
 func (m *Model) updateTemplatesView() {
+	// Clear findings table since we're showing templates
+	m.findingsTable.SetRows(nil)
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Available Templates: %d\n\n", len(m.templates)))
 	for _, t := range m.templates {

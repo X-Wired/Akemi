@@ -1040,6 +1040,8 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			Timeout:      firstPositiveInt(cfg.Timeout, 10),
 			UseTemplates: true,
 			TemplateTags: tags,
+			Fingerprint:  true,
+			Prioritize:   true,
 		})
 		result.VulnFindings = append(result.VulnFindings, findings...)
 		for _, finding := range findings {

@@ -1,6 +1,7 @@
 package vuln
 
 import (
+	core "Akemi/internal/core"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -403,5 +404,429 @@ func TestLoadTemplatesFindsRepoProbesFromNestedWorkingDirectory(t *testing.T) {
 	}
 	if templates[0].ID != "cwd-probe-test" {
 		t.Fatalf("unexpected template id: %q", templates[0].ID)
+	}
+}
+
+// =============================================================
+// ── Fingerprinting Tests ─────────────────────────────────────
+// =============================================================
+
+func TestFingerprintTargetDetectsSpringBoot(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Set-Cookie", "JSESSIONID=ABC123; Path=/")
+		w.Header().Set("X-Application-Context", "application:8080")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body>Whitelabel Error Page</body></html>`))
+	}))
+	defer srv.Close()
+
+	ctx, err := FingerprintTarget(srv.URL, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("FingerprintTarget: %v", err)
+	}
+
+	if ctx.Framework != "Spring Boot" {
+		t.Fatalf("expected Spring Boot, got %q", ctx.Framework)
+	}
+	if ctx.Language != "java" {
+		t.Fatalf("expected java, got %q", ctx.Language)
+	}
+}
+
+func TestFingerprintTargetDetectsCloudflare(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("cf-ray", "abc123")
+		w.Header().Set("Server", "cloudflare")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	ctx, err := FingerprintTarget(srv.URL, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("FingerprintTarget: %v", err)
+	}
+
+	if ctx.WAF != "Cloudflare" {
+		t.Fatalf("expected Cloudflare WAF, got %q", ctx.WAF)
+	}
+	if ctx.WAFConfidence <= 0 {
+		t.Fatalf("expected WAF confidence > 0, got %f", ctx.WAFConfidence)
+	}
+}
+
+func TestFingerprintTargetClassifiesParameters(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	ctx, err := FingerprintTarget(srv.URL+"?id=123&q=test&redirect=https://evil.com&token=abc", nil, srv.Client())
+	if err != nil {
+		t.Fatalf("FingerprintTarget: %v", err)
+	}
+
+	if ctx.ParameterProfile == nil {
+		t.Fatal("expected parameter profile to be non-nil")
+	}
+
+	categories := map[string]string{}
+	for _, p := range ctx.ParameterProfile.Parameters {
+		categories[p.Name] = p.Category
+	}
+
+	if categories["id"] != "numeric_id" {
+		t.Fatalf("expected id to be numeric_id, got %q", categories["id"])
+	}
+	if categories["q"] != "search_query" {
+		t.Fatalf("expected q to be search_query, got %q", categories["q"])
+	}
+	if categories["redirect"] != "redirect_url" {
+		t.Fatalf("expected redirect to be redirect_url, got %q", categories["redirect"])
+	}
+	if categories["token"] != "token_hash" {
+		t.Fatalf("expected token to be token_hash, got %q", categories["token"])
+	}
+}
+
+func TestFingerprintTargetDetectsDjango(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Set-Cookie", "csrftoken=XYZ789; Path=/")
+		w.Header().Set("Set-Cookie", "sessionid=DEF456; Path=/; HttpOnly")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><meta name="generator" content="Django 4.2"></html>`))
+	}))
+	defer srv.Close()
+
+	ctx, err := FingerprintTarget(srv.URL, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("FingerprintTarget: %v", err)
+	}
+
+	if ctx.Framework != "Django" {
+		t.Fatalf("expected Django, got %q", ctx.Framework)
+	}
+	if ctx.Language != "python" {
+		t.Fatalf("expected python, got %q", ctx.Language)
+	}
+	if len(ctx.SessionCookies) == 0 {
+		t.Fatal("expected session cookies to be detected")
+	}
+}
+
+func TestFingerprintTargetDetectsAPIExposure(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// GraphQL-like introspection response
+		_, _ = w.Write([]byte(`{"data": {"__schema": {"types": []}}}`))
+	}))
+	defer srv.Close()
+
+	ctx, err := FingerprintTarget(srv.URL+"/graphql", nil, srv.Client())
+	if err != nil {
+		t.Fatalf("FingerprintTarget: %v", err)
+	}
+
+	if ctx.APIExposure != "graphql" {
+		t.Fatalf("expected graphql API exposure, got %q", ctx.APIExposure)
+	}
+}
+
+func TestFingerprintTargetRespectsCandidateParams(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	ctx, err := FingerprintTarget(srv.URL, []string{"file", "callback_url"}, srv.Client())
+	if err != nil {
+		t.Fatalf("FingerprintTarget: %v", err)
+	}
+
+	if ctx.ParameterProfile == nil {
+		t.Fatal("expected parameter profile")
+	}
+
+	categories := map[string]string{}
+	for _, p := range ctx.ParameterProfile.Parameters {
+		categories[p.Name] = p.Category
+	}
+
+	if categories["file"] != "file_path" {
+		t.Fatalf("expected file to be file_path, got %q", categories["file"])
+	}
+	if categories["callback_url"] != "callback" {
+		t.Fatalf("expected callback_url to be callback, got %q", categories["callback_url"])
+	}
+}
+
+// =============================================================
+// ── Prioritization Tests ─────────────────────────────────────
+// =============================================================
+
+func makeBasicTemplate(id, name, severity string, tags []string) ProbeTemplate {
+	return ProbeTemplate{
+		ID:       id,
+		Disabled: false,
+		Info: TemplateInfo{
+			Name:     name,
+			Severity: severity,
+			Tags:     tags,
+		},
+		Inject:    "query_params",
+		Detection: "pattern",
+		Payloads:  []string{"test"},
+		Matchers: Matchers{
+			BodyPatterns: []string{"test"},
+		},
+	}
+}
+
+func TestPrioritizeTemplatesNilContextReturnsOriginal(t *testing.T) {
+	t.Parallel()
+
+	tmpls := []ProbeTemplate{
+		makeBasicTemplate("a", "A", "high", []string{"php"}),
+		makeBasicTemplate("b", "B", "low", []string{"java"}),
+	}
+
+	result := PrioritizeTemplates(tmpls, nil, nil, false)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 templates, got %d", len(result))
+	}
+	if result[0].ID != "a" || result[1].ID != "b" {
+		t.Fatal("expected original order preserved with nil context")
+	}
+}
+
+func TestPrioritizeTemplatesSingleElementNoop(t *testing.T) {
+	t.Parallel()
+
+	tmpls := []ProbeTemplate{
+		makeBasicTemplate("only", "Only", "high", []string{"php"}),
+	}
+
+	ctx := &core.TargetContext{Language: "php", Framework: "Laravel"}
+	result := PrioritizeTemplates(tmpls, ctx, []string{"id"}, false)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(result))
+	}
+}
+
+func TestPrioritizeTemplatesTechStackBoostsJavaOnSpringTarget(t *testing.T) {
+	t.Parallel()
+
+	// Java deserialization should be boosted against a Spring Boot target
+	javaTmpl := makeBasicTemplate("java-deser", "Java Deserialization", "high",
+		[]string{"java", "deserialization", "gadget"})
+	phpTmpl := makeBasicTemplate("php-sqli", "PHP SQLi", "critical",
+		[]string{"php", "sqli", "injection"})
+
+	tmpls := []ProbeTemplate{phpTmpl, javaTmpl}
+
+	ctx := &core.TargetContext{
+		Framework: "Spring Boot",
+		Language:  "java",
+	}
+
+	result := PrioritizeTemplates(tmpls, ctx, nil, false)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 templates, got %d", len(result))
+	}
+
+	// Java deserialization should be ranked higher than PHP SQLi on a Java target
+	if result[0].ID != "java-deser" {
+		t.Fatalf("expected java-deser first on Java target, got %q", result[0].ID)
+	}
+}
+
+func TestPrioritizeTemplatesCVEBoostsLog4ShellOnJavaTarget(t *testing.T) {
+	t.Parallel()
+
+	log4jTmpl := makeBasicTemplate("log4shell", "Log4Shell", "critical",
+		[]string{"cve", "log4j", "jndi", "rce", "java"})
+	genericTmpl := makeBasicTemplate("sqli-error", "SQLi Error", "high",
+		[]string{"sqli", "injection", "database"})
+
+	tmpls := []ProbeTemplate{genericTmpl, log4jTmpl}
+
+	// Target: Spring Boot (Java) — Log4Shell should get CVE bonus
+	ctx := &core.TargetContext{
+		Framework: "Spring Boot",
+		Language:  "java",
+		TechStack: []string{"Spring Boot", "java", "Log4j"},
+	}
+
+	result := PrioritizeTemplates(tmpls, ctx, nil, false)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 templates, got %d", len(result))
+	}
+
+	// Log4Shell should be ranked higher due to CVE+tech bonus
+	if result[0].ID != "log4shell" {
+		t.Fatalf("expected log4shell first on Log4j target, got %q", result[0].ID)
+	}
+}
+
+func TestPrioritizeTemplatesParamMatchBoostsSSRFOnRedirectParam(t *testing.T) {
+	t.Parallel()
+
+	ssrfTmpl := makeBasicTemplate("ssrf", "SSRF", "high",
+		[]string{"ssrf", "injection", "cloud"})
+	xssTmpl := makeBasicTemplate("xss-reflected", "XSS", "medium",
+		[]string{"xss", "injection", "client-side"})
+
+	tmpls := []ProbeTemplate{xssTmpl, ssrfTmpl}
+
+	ctx := &core.TargetContext{
+		ParameterProfile: &core.ParameterProfile{
+			Parameters: []core.ParameterClass{
+				{Name: "redirect", Category: "redirect_url", PriorityTags: []string{"ssrf", "open_redirect", "lfi"}},
+			},
+		},
+	}
+
+	result := PrioritizeTemplates(tmpls, ctx, []string{"redirect"}, false)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 templates, got %d", len(result))
+	}
+
+	// SSRF should be ranked higher because the redirect param's priority tags include "ssrf"
+	if result[0].ID != "ssrf" {
+		t.Fatalf("expected ssrf first on redirect param, got %q", result[0].ID)
+	}
+}
+
+func TestPrioritizeTemplatesWAFPenaltyDeprioritizesSQLiOnCloudflare(t *testing.T) {
+	t.Parallel()
+
+	sqliTmpl := makeBasicTemplate("sqli-error", "SQLi", "high",
+		[]string{"sqli", "injection", "database"})
+	cmdiTmpl := makeBasicTemplate("cmdi-blind", "CMD Injection", "high",
+		[]string{"cmdi", "rce", "injection"})
+
+	tmpls := []ProbeTemplate{sqliTmpl, cmdiTmpl}
+
+	ctx := &core.TargetContext{
+		WAF:           "Cloudflare",
+		WAFConfidence: 0.95,
+	}
+
+	result := PrioritizeTemplates(tmpls, ctx, nil, false)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 templates, got %d", len(result))
+	}
+
+	// SQLi gets a 0.40 penalty on Cloudflare; CMDi only 0.50
+	// Both are "high" severity and no tech match, but CMDi should be higher
+	if result[0].ID != "cmdi-blind" {
+		t.Fatalf("expected cmdi-blind first (sqli penalized on Cloudflare), got %q", result[0].ID)
+	}
+}
+
+func TestPrioritizeTemplatesCriticalOverHighSeverity(t *testing.T) {
+	t.Parallel()
+
+	criticalTmpl := makeBasicTemplate("critical-cve", "Critical CVE", "critical", []string{"cve"})
+	highTmpl := makeBasicTemplate("high-thing", "High Thing", "high", []string{})
+	mediumTmpl := makeBasicTemplate("medium-thing", "Medium Thing", "medium", []string{})
+	lowTmpl := makeBasicTemplate("low-thing", "Low Thing", "low", []string{})
+
+	tmpls := []ProbeTemplate{lowTmpl, mediumTmpl, highTmpl, criticalTmpl}
+
+	result := PrioritizeTemplates(tmpls, &core.TargetContext{URL: "http://test.com"}, nil, false)
+
+	if len(result) != 4 {
+		t.Fatalf("expected 4 templates, got %d", len(result))
+	}
+
+	// Critical should be first, low should be last
+	if result[0].ID != "critical-cve" {
+		t.Fatalf("expected critical-cve first, got %q", result[0].ID)
+	}
+	if result[3].ID != "low-thing" {
+		t.Fatalf("expected low-thing last, got %q", result[3].ID)
+	}
+}
+
+func TestPrioritizeTemplatesStableSortPreservesOrderOnTie(t *testing.T) {
+	t.Parallel()
+
+	// Templates with identical scoring should preserve their relative order
+	tmplA := makeBasicTemplate("a-first", "A", "high", []string{})
+	tmplB := makeBasicTemplate("b-second", "B", "high", []string{})
+
+	tmpls := []ProbeTemplate{tmplA, tmplB}
+
+	result := PrioritizeTemplates(tmpls, &core.TargetContext{URL: "http://test.com"}, nil, false)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 templates, got %d", len(result))
+	}
+
+	// On tie, stable sort should preserve a-then-b
+	if result[0].ID != "a-first" || result[1].ID != "b-second" {
+		t.Fatalf("expected stable sort [a-first, b-second], got [%s, %s]", result[0].ID, result[1].ID)
+	}
+}
+
+func TestScoreSeverity(t *testing.T) {
+	t.Parallel()
+
+	if scoreSeverity("critical") <= scoreSeverity("high") {
+		t.Fatal("expected critical > high")
+	}
+	if scoreSeverity("high") <= scoreSeverity("medium") {
+		t.Fatal("expected high > medium")
+	}
+	if scoreSeverity("medium") <= scoreSeverity("low") {
+		t.Fatal("expected medium > low")
+	}
+	if scoreSeverity("low") <= 0 {
+		t.Fatal("expected low > 0")
+	}
+}
+
+func TestScoreTechMatchPHPOnDjangoTarget(t *testing.T) {
+	t.Parallel()
+
+	tmpl := makeBasicTemplate("x", "X", "high", []string{"php", "sqli"})
+	ctx := &core.TargetContext{Framework: "Django", Language: "python"}
+
+	s := scoreTechMatch(tmpl, ctx)
+	if s > 0 {
+		t.Fatalf("expected 0 tech match for PHP template on Django, got %f", s)
+	}
+}
+
+func TestScoreTechMatchJavaOnSpringTarget(t *testing.T) {
+	t.Parallel()
+
+	tmpl := makeBasicTemplate("x", "X", "high", []string{"java", "deserialization"})
+	ctx := &core.TargetContext{Framework: "Spring Boot", Language: "java"}
+
+	s := scoreTechMatch(tmpl, ctx)
+	if s <= 0 {
+		t.Fatalf("expected positive tech match for Java template on Spring, got %f", s)
 	}
 }

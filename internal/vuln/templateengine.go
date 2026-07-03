@@ -194,11 +194,14 @@ func ListTemplates(templates []ProbeTemplate) {
 
 // ExecuteAllTemplates runs all loaded templates against a URL, probing each
 // query parameter. Returns aggregated findings.
+// If targetCtx is non-nil (from prior fingerprinting), it is used to display
+// context info; template prioritization will consume it in Phase 2.
 func ExecuteAllTemplates(
 	templates []ProbeTemplate,
 	rawURL string,
 	candidateParams []string,
 	cfg ProbeConfig,
+	targetCtx *core.TargetContext,
 ) ([]VulnFinding, error) {
 
 	rawURL = core.EnsureProtocol(rawURL)
@@ -212,6 +215,11 @@ func ExecuteAllTemplates(
 	baseURL := fmt.Sprintf("%s://%s%s", parsed.Scheme, parsed.Host, parsed.Path)
 	client := core.CreateHTTPClient(cfg.Timeout)
 
+	// ── Adaptive prioritization ───────────────────────────
+	if cfg.Prioritize && targetCtx != nil && len(templates) > 1 {
+		templates = PrioritizeTemplates(templates, targetCtx, paramNames, !cfg.Quiet)
+	}
+
 	var findings []VulnFinding
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -223,6 +231,21 @@ func ExecuteAllTemplates(
 	}
 	if !cfg.Quiet {
 		fmt.Printf("\n[*] Running %d template(s) against %s\n", len(templates), baseURL)
+		if targetCtx != nil {
+			parts := make([]string, 0, 3)
+			if targetCtx.Framework != "" {
+				parts = append(parts, targetCtx.Framework)
+			}
+			if targetCtx.Language != "" && targetCtx.Language != targetCtx.Framework {
+				parts = append(parts, targetCtx.Language)
+			}
+			if targetCtx.WAF != "" {
+				parts = append(parts, targetCtx.WAF)
+			}
+			if len(parts) > 0 {
+				fmt.Printf("[*] Detected: %s\n", strings.Join(parts, " / "))
+			}
+		}
 		if len(paramNames) > 0 {
 			fmt.Printf("[*] Testing %d parameter(s) × %d template(s) = %d probe(s)\n",
 				len(paramNames), len(templates), totalProbes)

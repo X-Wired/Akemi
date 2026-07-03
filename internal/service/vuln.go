@@ -136,6 +136,8 @@ func (s *VulnService) Probe(ctx context.Context, targetURL string, cfg core.Prob
 		TemplateDir:  cfg.TemplateDir,
 		TemplateTags: cfg.TemplateTags,
 		TemplateIDs:  cfg.TemplateIDs,
+		Fingerprint:  cfg.Fingerprint,
+		Prioritize:   cfg.Prioritize,
 		Quiet:        true,
 	}
 

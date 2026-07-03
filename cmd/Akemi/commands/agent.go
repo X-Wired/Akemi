@@ -835,6 +835,8 @@ func buildProbeConfig(args map[string]interface{}) core.ProbeConfig {
 		Timeout:      10,
 		UseTemplates: true,
 		TemplateTags: tagList,
+		Fingerprint:  true,
+		Prioritize:   true,
 	}
 }
 

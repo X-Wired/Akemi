@@ -108,6 +108,8 @@ type ProbeConfig struct {
 	TemplateIDs  []string // Run specific templates by ID
 	UseTemplates bool     // If true, use YAML templates; if false, use legacy hardcoded probes
 	Quiet        bool     // Suppress terminal progress output when embedded in TUI/service flows
+	Fingerprint  bool     // Enable passive target fingerprinting before probing
+	Prioritize   bool     // Enable adaptive template prioritization (requires --fingerprint)
 }
 
 // --- SQLi Detection ---
@@ -383,6 +385,21 @@ func ProbeParamsWithCandidates(rawURL string, candidateParams []string, cfg Prob
 		cfg.Threads = 5
 	}
 
+	// ── Context-Aware Fingerprinting ─────────────────────
+	var targetCtx *core.TargetContext
+	if cfg.Fingerprint {
+		client := core.CreateHTTPClient(cfg.Timeout)
+		var err error
+		targetCtx, err = FingerprintTarget(rawURL, candidateParams, client)
+		if err != nil {
+			if !cfg.Quiet {
+				fmt.Printf("[!] Fingerprinting warning: %v\n", err)
+			}
+		} else if !cfg.Quiet {
+			PrintFingerprintSummary(targetCtx)
+		}
+	}
+
 	// ── Template Engine Mode ────────────────────────────
 	if cfg.UseTemplates {
 		templateDir := cfg.TemplateDir
@@ -410,7 +427,7 @@ func ProbeParamsWithCandidates(rawURL string, candidateParams []string, cfg Prob
 		if !cfg.Quiet {
 			fmt.Printf("[*] Loaded %d probe template(s)\n", len(templates))
 		}
-		return ExecuteAllTemplates(templates, rawURL, candidateParams, cfg)
+		return ExecuteAllTemplates(templates, rawURL, candidateParams, cfg, targetCtx)
 	}
 
 	// ── Legacy Mode (backward compatible) ───────────────

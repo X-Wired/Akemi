@@ -34,6 +34,8 @@ Examples:
 	cmd.Flags().Bool("list", false, "List all available probe templates")
 	cmd.Flags().Bool("legacy", false, "Use legacy hardcoded probes instead of YAML")
 	cmd.Flags().Bool("safe", false, "Only run passive/safe probes (no active exploitation)")
+	cmd.Flags().Bool("fingerprint", false, "Enable passive target fingerprinting before probing (framework, WAF, API detection)")
+	cmd.Flags().Bool("prioritize", false, "Adaptive template ordering by relevance (requires --fingerprint)")
 
 	return cmd
 }
@@ -90,6 +92,8 @@ func runProbe(cmd *cobra.Command, args []string) error {
 		TemplateDir:  flagString(cmd, "template-dir"),
 		TemplateTags: tags,
 		TemplateIDs:  ids,
+		Fingerprint:  flagBool(cmd, "fingerprint"),
+		Prioritize:   flagBool(cmd, "prioritize"),
 	}
 
 	findings, err := s.Vuln.Probe(ctx, urlFlag, cfg)

@@ -351,6 +351,44 @@ type ProbeConfig struct {
 	TemplateDir  string   `json:"template_dir,omitempty"`
 	TemplateTags []string `json:"template_tags,omitempty"`
 	TemplateIDs  []string `json:"template_ids,omitempty"`
+	Fingerprint  bool     `json:"fingerprint"` // Enable target fingerprinting before probing
+	Prioritize   bool     `json:"prioritize"`  // Enable adaptive template prioritization (requires fingerprint)
+}
+
+// =============================================================================
+// TargetContext — Application fingerprinting
+// =============================================================================
+
+// TargetContext holds the results of passive application fingerprinting.
+// It is populated before vulnerability probes run and drives adaptive
+// template selection, parameter prioritization, and evasion strategy.
+type TargetContext struct {
+	URL              string            `json:"url"`
+	Framework        string            `json:"framework,omitempty"` // e.g. "Django", "Spring Boot", "Express"
+	Language         string            `json:"language,omitempty"`  // e.g. "python", "java", "javascript"
+	Server           string            `json:"server,omitempty"`    // e.g. "nginx/1.24.0", "Apache/2.4.57"
+	WAF              string            `json:"waf,omitempty"`       // e.g. "Cloudflare", "ModSecurity", "AWS WAF"
+	WAFConfidence    float64           `json:"waf_confidence,omitempty"`
+	APIExposure      string            `json:"api_exposure,omitempty"` // "rest", "graphql", "soap", ""
+	AuthScheme       string            `json:"auth_scheme,omitempty"`  // "jwt", "session", "oauth2", "basic", ""
+	SessionCookies   []string          `json:"session_cookies,omitempty"`
+	CSRFParam        string            `json:"csrf_param,omitempty"` // detected CSRF token parameter name
+	TechStack        []string          `json:"tech_stack,omitempty"` // all detected technologies
+	ParameterProfile *ParameterProfile `json:"parameter_profile,omitempty"`
+}
+
+// ParameterProfile classifies each query parameter by its semantic type
+// to inform template prioritization and payload selection.
+type ParameterProfile struct {
+	Parameters []ParameterClass `json:"parameters"`
+}
+
+// ParameterClass describes a classified query parameter.
+type ParameterClass struct {
+	Name         string   `json:"name"`
+	Category     string   `json:"category"` // numeric_id | redirect_url | search_query | file_path | email_user | token_hash | callback | generic
+	SampleValue  string   `json:"sample_value,omitempty"`
+	PriorityTags []string `json:"priority_tags,omitempty"` // e.g. ["sqli", "ssrf", "xss"]
 }
 
 // VulnFinding represents a discovered vulnerability.
