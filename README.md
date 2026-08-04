@@ -2,10 +2,10 @@
 
 # Akemi: Autonomous Attack Surface Management
 
-> ✅ **v2.1.0 development snapshot** — This release includes the v2 MCP server and autonomous agent tooling.
+> **v2.1.0 development snapshot** - This release includes the v2 MCP server and autonomous agent tooling.
 > For source, release notes, and downloads, visit [X-Wired/Akemi](https://github.com/X-Wired/Akemi).
 
-**Akemi v2** is an AI-augmented, modular attack surface management framework that combines high-performance reconnaissance with LLM-driven autonomous agents. It can map, probe, and validate entire attack surfaces — either manually via CLI or autonomously through an AI agent that plans and executes engagements for you.
+**Akemi v2** is an AI-augmented, modular attack surface management framework that combines high-performance reconnaissance with LLM-driven autonomous agents. It can map, probe, and validate entire attack surfaces - either manually via CLI or autonomously through an AI agent that plans and executes engagements for you.
 
 The framework integrates high-speed network triage (Akemi-Spear), deep web discovery, a YAML-driven vulnerability engine, and an LLM agent system into a single, cohesive environment with an optional rich terminal UI.
 
@@ -24,46 +24,45 @@ Cookies, credentials, CSRF tokens, and other secrets are masked in MCP output,
 assistant context, reports, and archives by default.
 
 ![Akemi 2.1 dashboard](Pictures/Screenshot.png)
-## ⚡ Key Highlights
+## Key Highlights
 
-### 🤖 LLM Agent System (NEW in v2)
+### LLM Agent System (NEW in v2)
 Akemi v2 introduces an autonomous AI agent that can plan and execute entire engagements:
 - **Multi-Vendor LLM Support**: Anthropic (Claude), OpenAI (GPT-4o), DeepSeek, Google (Gemini), and local models via Ollama/vLLM.
-- **Autonomous Planning**: The agent analyzes targets, selects tools, and executes multi-step attack surface discovery — with human confirmation for destructive actions.
-- **Safety Controls**: Configurable scope (domains, CIDRs), rate limiting, and risk levels (safe → intrusive).
+- **Autonomous Planning**: The agent analyzes targets, selects tools, and executes multi-step attack surface discovery - with human confirmation for destructive actions.
+- **Safety Controls**: Configurable scope (domains, CIDRs), rate limiting, and risk levels (safe to intrusive).
 - **Built-in Assistant**: Interactive chat interface for guided reconnaissance sessions.
 
-### 🖥️ Terminal UI Dashboard (NEW in v2)
+### Terminal UI Dashboard (NEW in v2)
 A rich, keyboard-driven TUI for real-time engagement monitoring:
 - **Live Dashboards**: Track discovery, fuzzing, agent tasks, and findings in real time.
 - **Notification System**: Inline alerts for high-severity findings and agent decisions.
 - **Dark/Light Themes**: Customizable styling for your terminal.
 
-### 🔌 MCP Server & Client (NEW in v2)
+### MCP Server & Client (NEW in v2)
 - **MCP Server**: Expose Akemi as a tool source for Claude Desktop and other MCP-compatible LLM hosts via stdio or HTTP (Streamable HTTP).
 - **MCP Client**: Consume external MCP tools from other servers, bridging them into Akemi's agent workflow.
 
-### 🍯 DotHound: Credential Capture (NEW in v2)
-- **Browser-Based Auth Capture**: Bundled LibreWolf instance that proxies traffic and captures authentication tokens, cookies, and form submissions.
-- **CA Injection**: Dynamic certificate authority for MITM-style capture during engagements.
-- **Export**: Dump captured credentials as structured JSON for downstream use.
+### DotHound Integration (Experimental)
 
-### ⚡ Akemi-Spear: High-Performance Recon Engine
+Browser-based authentication capture is not bundled with this release.
+
+### Akemi-Spear: High-Performance Recon Engine
 At the heart of Akemi lies **Akemi-Spear**, a Rust reconnaissance engine built for speed and stealth:
 - **High-Speed Host Discovery**: Multi-threaded sweep and SYN scanning capabilities.
 - **Service Fingerprinting**: Efficient banner collection and service-oriented triage.
 - **Port Scanning**: Template-based and customizable scanning logic optimized for reliability.
 - **Resume Support**: Interrupted scans can be resumed from the last checkpoint.
 
-### 🧪 YAML-Driven Vulnerability Validation
-Akemi moves beyond simple discovery with its **Probe Engine**. It uses a flexible, YAML-driven approach to validate vulnerabilities across your attack surface:
+### YAML-Driven Vulnerability Validation (Beta)
+Akemi's **Probe Engine** is a beta feature. It uses a flexible, YAML-driven approach to validate vulnerabilities across your attack surface:
 - **Customizable Templates**: The `probes/` directory contains active checks for SQLi, RCE, SSRF, deserialization, and more.
 - **Protocol Agnostic**: Validate findings across HTTP, DNS, and TCP using structured logic.
 - **Tag-Based Filtering**: Run only the templates relevant to your engagement (e.g., `--vuln-check-tags sqli,lfi`).
 
 ---
 
-## 🧩 Core Capabilities
+## Core Capabilities
 
 ### Reconnaissance
 - **Attack Surface Mapping**: Automated web crawling, subdomain enumeration, and endpoint extraction.
@@ -93,7 +92,7 @@ Akemi moves beyond simple discovery with its **Probe Engine**. It uses a flexibl
 
 ---
 
-## 📁 Repository Layout
+## Repository Layout
 
 ```text
 cmd/
@@ -131,9 +130,9 @@ probes/                    YAML vulnerability templates
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
-> ✅ **Akemi v2.1.0 is under active stabilization.** Build from source below, or check [GitHub releases](https://github.com/X-Wired/Akemi/releases) for packaged binaries.
+> **Akemi v2.1.0 is under active stabilization.** Build from source below, or check [GitHub releases](https://github.com/X-Wired/Akemi/releases) for packaged binaries.
 
 ### Configuration
 
@@ -141,7 +140,7 @@ Copy the example config and edit it with your settings:
 
 ```bash
 cp akemi.conf.example akemi.conf
-# Edit akemi.conf — add API keys for LLM providers you want to use
+# Edit akemi.conf - add API keys for LLM providers you want to use
 ```
 
 ### Build Instructions
@@ -175,7 +174,7 @@ The script will:
 
 ---
 
-## 📋 Common Workflows
+## Common Workflows
 
 ### 1. Autonomous Agent Engagement (NEW)
 Let the LLM agent plan and execute a full attack surface mapping:
@@ -290,6 +289,6 @@ This tool is provided for educational purposes and authorized security assessmen
 
 ---
 
-> 🏗️ **Akemi v2.1.0** — pre-stable release candidate with MCP server/client and autonomous agent support. Visit [GitHub releases](https://github.com/X-Wired/Akemi/releases) for downloads.
+> **Akemi v2.1.0** - pre-stable release candidate with MCP server/client and autonomous agent support. Visit [GitHub releases](https://github.com/X-Wired/Akemi/releases) for downloads.
 
 
