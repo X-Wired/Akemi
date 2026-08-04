@@ -134,7 +134,7 @@ const AkemiASCII = `
                                 %<@: @@@          @@  @}       @@@                  }   @%                                     
                              ]@@@@@%                                                                                           
                                                                                                                                                                                 
-                                    Build 1.0.0 Stable
+                                    Build 2.1.0 Development
                                  Codename: "Cyber Huntress"  
                                     Made with love <3    
                                      -Wired, Fuwa & Vo1d

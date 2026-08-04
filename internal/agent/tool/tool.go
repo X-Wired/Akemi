@@ -6,6 +6,7 @@ package tool
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -191,7 +192,8 @@ func (r *Registry) Get(name string) (*AgentTool, bool) {
 
 // FindByCapability returns tools that provide the given capability.
 func (r *Registry) FindByCapability(capability string) []*AgentTool {
-	names := r.byProvide[capability]
+	names := append([]string(nil), r.byProvide[capability]...)
+	sort.Strings(names)
 	tools := make([]*AgentTool, 0, len(names))
 	for _, name := range names {
 		if t, ok := r.tools[name]; ok {

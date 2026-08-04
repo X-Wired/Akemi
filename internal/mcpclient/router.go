@@ -104,6 +104,20 @@ func (r *Router) SetToolEventSink(sink toolbridge.Sink) {
 	}
 }
 
+// RecordScanResult propagates completed scan results to syncable MCP tool providers.
+func (r *Router) RecordScanResult(target, intent string, result interface{}) {
+	if r == nil {
+		return
+	}
+	for _, source := range r.sources {
+		if syncable, ok := source.Provider.(interface {
+			RecordScanResult(string, string, interface{})
+		}); ok {
+			syncable.RecordScanResult(target, intent, result)
+		}
+	}
+}
+
 // Execute calls a namespaced MCP tool with JSON arguments.
 func (r *Router) Execute(ctx context.Context, llmName string, arguments string) (*ExecutionResult, error) {
 	r.refresh()

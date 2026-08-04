@@ -84,8 +84,8 @@ func NewClient(cfg config.LLMConfig) (Client, ProviderCapabilities, error) {
 	vendor := cfg.GetActive()
 	apiKey := cfg.ActiveAPIKey()
 
-	switch provider {
-	case "openai", "local", "deepseek":
+	switch config.NormalizeLLMProvider(provider) {
+	case "openai", "local", "deepseek", "google":
 		caps := ProviderCapabilities{ToolCalls: true, Streaming: false}
 		if provider == "deepseek" {
 			caps.ReasoningFields = true
@@ -101,7 +101,7 @@ func NewClient(cfg config.LLMConfig) (Client, ProviderCapabilities, error) {
 			ReasoningEffort: vendor.ReasoningEffort,
 			Thinking:        vendor.Thinking,
 		}), caps, nil
-	case "anthropic", "google":
+	case "anthropic":
 		return nil, ProviderCapabilities{}, ErrProviderNotImplemented{Provider: provider}
 	default:
 		return nil, ProviderCapabilities{}, ErrUnknownProvider{Provider: provider}

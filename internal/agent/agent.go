@@ -15,6 +15,8 @@ import (
 	"Akemi/internal/agent/planner"
 	"Akemi/internal/agent/safety"
 	"Akemi/internal/agent/tool"
+	"Akemi/internal/engagement"
+	"Akemi/internal/execution"
 )
 
 // Agent orchestrates autonomous security testing workflows.
@@ -26,6 +28,8 @@ type Agent struct {
 	events   *events.Bus
 	registry *tool.Registry
 	logger   *slog.Logger
+	scope    execution.ScopePolicy
+	policy   execution.ExecutionPolicy
 }
 
 // Config holds Agent configuration.
@@ -51,11 +55,14 @@ func NewAgent(registry *tool.Registry, cfg Config) *Agent {
 		cfg.MaxConcurrency = 5
 	}
 	if cfg.MaxAutoRisk == "" {
-		cfg.MaxAutoRisk = tool.RiskActive
+		cfg.MaxAutoRisk = tool.RiskIntrusive
 	}
 
 	bus := events.NewBus(200)
 	safe := safety.NewSafetyLayerWithPolicy(cfg.AllowedDomains, cfg.AllowedCIDRs, cfg.BlockedDomains, cfg.MaxRPM, cfg.MaxAutoRisk)
+	scope := execution.ScopePolicy{RootDomains: cfg.AllowedDomains, AuthorizedCIDRs: cfg.AllowedCIDRs, AllowSubdomains: true}
+	policy := execution.DefaultPolicy()
+	policy.MaxRisk = cfg.MaxAutoRisk
 	mem := memory.NewAgentMemory()
 
 	pl := planner.NewPlanner(registry)
@@ -70,6 +77,8 @@ func NewAgent(registry *tool.Registry, cfg Config) *Agent {
 		events:   bus,
 		registry: registry,
 		logger:   cfg.Logger,
+		scope:    scope,
+		policy:   policy,
 	}
 }
 
@@ -81,6 +90,15 @@ func (a *Agent) Run(ctx context.Context, goalDesc, target, intent string) (*Agen
 		Target:      target,
 		Intent:      intent,
 	}
+
+	runCtx, runErr := execution.NewRunContext(goal.ID, engagement.TargetProfile{BaseURL: target}, a.scope, a.policy)
+	if runErr != nil {
+		return nil, runErr
+	}
+	if runErr = execution.ValidateTarget(runCtx.Scope, target); runErr != nil {
+		return nil, fmt.Errorf("target is outside agent scope: %w", runErr)
+	}
+	ctx = execution.WithRunContext(ctx, runCtx)
 
 	a.logger.Info("agent starting",
 		slog.String("goal_id", goal.ID),
@@ -114,7 +132,7 @@ func (a *Agent) Run(ctx context.Context, goalDesc, target, intent string) (*Agen
 		SessionID: goal.ID,
 		Target:    target,
 		StartedAt: execResult.StartedAt,
-		EndedAt:   *execResult.CompletedAt,
+		EndedAt:   time.Now(),
 		Status:    string(execResult.Status),
 	}
 	for _, f := range execResult.Findings {

@@ -28,6 +28,20 @@ type Project struct {
 }
 
 // ── Constructors ──────────────────────────────────────────────────────
+// ProjectDirectory returns the project root created below a parent directory.
+// It is used by interactive creation flows where the user enters a container
+// directory (for example /root) and a project name (for example project1).
+func ProjectDirectory(parent, name string) (string, error) {
+	parent = strings.TrimSpace(parent)
+	if parent == "" {
+		return "", fmt.Errorf("parent directory is required")
+	}
+	abs, err := filepath.Abs(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve parent directory: %w", err)
+	}
+	return filepath.Join(abs, sanitizeName(name)), nil
+}
 
 // CreateProject initializes a new Akemi project at the given directory.
 // It creates the directory tree, writes the manifest, opens the database,

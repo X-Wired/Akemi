@@ -2,6 +2,7 @@ package recon
 
 import (
 	core "Akemi/internal/core"
+	"Akemi/internal/execution"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -253,6 +254,7 @@ func crawlDetailedWithClientCallbackContext(ctx context.Context, startURL string
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	client = execution.WrapHTTPClient(ctx, client)
 	startURL = core.EnsureProtocol(startURL)
 	maxDepth = core.NormalizeCrawlDepth(maxDepth)
 	maxURLs := core.CrawlURLLimitForDepth(maxDepth)

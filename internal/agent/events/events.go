@@ -43,9 +43,11 @@ type Subscriber func(event Event)
 type Bus struct {
 	mu          sync.RWMutex
 	subscribers map[EventType][]Subscriber
-	allSubs     []Subscriber // Subscribers that receive all events
-	history     []Event      // Recent event history for late subscribers
+	allSubs     []Subscriber
+	history     []Event
 	maxHistory  int
+	queue       chan Event
+	closeOnce   sync.Once
 }
 
 // NewBus creates an event bus with history buffer.
@@ -53,11 +55,39 @@ func NewBus(historySize int) *Bus {
 	if historySize <= 0 {
 		historySize = 100
 	}
-	return &Bus{
+	b := &Bus{
 		subscribers: make(map[EventType][]Subscriber),
 		history:     make([]Event, 0, historySize),
 		maxHistory:  historySize,
+		queue:       make(chan Event, 256),
 	}
+	go b.dispatch()
+	return b
+}
+
+func (b *Bus) dispatch() {
+	for event := range b.queue {
+		b.mu.RLock()
+		subs := append([]Subscriber(nil), b.allSubs...)
+		if typed, ok := b.subscribers[event.Type]; ok {
+			subs = append(subs, typed...)
+		}
+		b.mu.RUnlock()
+		for _, sub := range subs {
+			func() {
+				defer func() { _ = recover() }()
+				sub(event)
+			}()
+		}
+	}
+}
+
+// Close stops callback delivery. History remains readable for diagnostics.
+func (b *Bus) Close() {
+	if b == nil {
+		return
+	}
+	b.closeOnce.Do(func() { close(b.queue) })
 }
 
 // Subscribe registers a subscriber for a specific event type.
@@ -76,26 +106,22 @@ func (b *Bus) SubscribeAll(sub Subscriber) {
 
 // Publish sends an event to all matching subscribers.
 func (b *Bus) Publish(event Event) {
+	if b == nil {
+		return
+	}
 	event.Timestamp = time.Now()
 
 	b.mu.Lock()
-	// Store in history
 	if len(b.history) >= b.maxHistory {
 		b.history = b.history[1:]
 	}
 	b.history = append(b.history, event)
-
-	// Copy subscriber lists to avoid lock during callback
-	subs := make([]Subscriber, 0)
-	subs = append(subs, b.allSubs...)
-	if typed, ok := b.subscribers[event.Type]; ok {
-		subs = append(subs, typed...)
-	}
 	b.mu.Unlock()
 
-	// Notify outside of lock
-	for _, sub := range subs {
-		sub(event)
+	select {
+	case b.queue <- event:
+	default:
+		// History is authoritative; slow subscribers can recover from it.
 	}
 }
 

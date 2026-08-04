@@ -96,7 +96,7 @@ mkdir -p bin/linux
 
 # 7. Build Akemi (Go)
 echo -e "${BLUE}[*] Building Akemi (Core Go Engine)...${NC}"
-go build -v -o bin/linux/Akemi ./cmd/Akemi
+go build -buildvcs=false -v -o bin/linux/Akemi ./cmd/Akemi
 echo -e "${GREEN}[+] Akemi binary created at bin/linux/Akemi${NC}"
 
 # 8. Build Akemi-Spear (Rust)

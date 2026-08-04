@@ -1,10 +1,13 @@
 package mcp
 
 import (
+	"Akemi/internal/version"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 )
 
 // Server is an MCP-compliant server that exposes Akemi's capabilities
@@ -15,12 +18,15 @@ type Server struct {
 	toolProvider ToolProvider
 	resources    ResourceReader
 	prompts      PromptRenderer
+	version      string
 	logger       *slog.Logger
 	initialized  bool
+	stateMu      sync.RWMutex
 }
 
 // ServerConfig configures the MCP server.
 type ServerConfig struct {
+	Version   string
 	Transport Transport
 	Logger    *slog.Logger
 	Tools     ToolProvider
@@ -39,7 +45,11 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.Resources == nil {
 		cfg.Resources = &noopResourceReader{}
 	}
+	if cfg.Version == "" {
+		cfg.Version = version.Current
+	}
 	if cfg.Prompts == nil {
+		// Version is copied onto the server below.
 		cfg.Prompts = &noopPromptRenderer{}
 	}
 
@@ -49,6 +59,7 @@ func NewServer(cfg ServerConfig) *Server {
 		toolProvider: cfg.Tools,
 		resources:    cfg.Resources,
 		prompts:      cfg.Prompts,
+		version:      cfg.Version,
 	}
 
 	s.handler = NewHandler(s)
@@ -63,28 +74,63 @@ func (s *Server) Run() error {
 
 	s.logger.Info("MCP server running",
 		slog.String("name", "Akemi MCP Server"),
-		slog.String("version", "2.0.0-dev"),
+		slog.String("version", s.version),
 	)
 
 	for req := range s.transport.Receive() {
 		if req == nil {
 			continue
 		}
-		s.handleRequest(req)
+		switch req.Method {
+		case "tools/call", "resources/read", "prompts/get":
+			go s.handleRequest(req)
+		default:
+			s.handleRequest(req)
+		}
 	}
 
 	s.logger.Info("MCP server stopped")
 	return nil
 }
 
+func (s *Server) isInitialized() bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.initialized
+}
+
+func (s *Server) setInitialized() {
+	s.stateMu.Lock()
+	s.initialized = true
+	s.stateMu.Unlock()
+}
+func (s *Server) send(req *Request, msg interface{}) error {
+	if req != nil && req.Reply != nil {
+		select {
+		case req.Reply <- msg:
+		default:
+		}
+		return nil
+	}
+	return s.transport.Send(msg)
+}
 func (s *Server) handleRequest(req *Request) {
-	ctx := context.Background()
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if req.Method != "initialize" && req.Method != "initialized" && req.Method != NotifInitialized && req.Method != "ping" && !s.isInitialized() {
+		if req.ID != nil {
+			s.send(req, NewErrorResponse(req.ID, ErrInvalidRequest, "initialize must complete before this method", nil))
+		}
+		return
+	}
 
 	switch req.Method {
 	case "initialize":
 		s.handleInitialize(req)
 	case "initialized", NotifInitialized:
-		s.initialized = true
+		s.setInitialized()
 		s.logger.Debug("client initialized")
 	case "tools/list":
 		s.handleToolsList(req)
@@ -107,14 +153,14 @@ func (s *Server) handleRequest(req *Request) {
 		}
 		resp := NewErrorResponse(req.ID, ErrMethodNotFound,
 			fmt.Sprintf("unknown method: %s", req.Method), nil)
-		s.transport.Send(resp)
+		s.send(req, resp)
 	}
 }
 
 func (s *Server) handleInitialize(req *Request) {
 	var params InitializeParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		s.transport.Send(NewErrorResponse(req.ID, ErrInvalidParams,
+		s.send(req, NewErrorResponse(req.ID, ErrInvalidParams,
 			"invalid initialize params", err.Error()))
 		return
 	}
@@ -134,28 +180,28 @@ func (s *Server) handleInitialize(req *Request) {
 		},
 		ServerInfo: ServerInfo{
 			Name:    "Akemi",
-			Version: "2.0.0-dev",
+			Version: s.version,
 		},
 		Instructions: "Use Akemi tools only for authorized security testing. Long-running tools emit progress and publish structured results through akemi:// resources.",
 	}
 
-	s.transport.Send(NewSuccessResponse(req.ID, result))
+	s.send(req, NewSuccessResponse(req.ID, result))
 }
 
 func (s *Server) handlePing(req *Request) {
-	s.transport.Send(NewSuccessResponse(req.ID, map[string]string{}))
+	s.send(req, NewSuccessResponse(req.ID, map[string]string{}))
 }
 
 func (s *Server) handleToolsList(req *Request) {
 	tools := s.toolProvider.List()
 	result := ToolsListResult{Tools: tools}
-	s.transport.Send(NewSuccessResponse(req.ID, result))
+	s.send(req, NewSuccessResponse(req.ID, result))
 }
 
 func (s *Server) handleToolsCall(ctx context.Context, req *Request) {
 	var params ToolCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		s.transport.Send(NewErrorResponse(req.ID, ErrInvalidParams,
+		s.send(req, NewErrorResponse(req.ID, ErrInvalidParams,
 			"invalid tool call params", err.Error()))
 		return
 	}
@@ -176,7 +222,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) {
 		if progressToken != nil {
 			_ = s.transport.Send(NewProgressNotification(progressToken, 1, 1, "failed "+params.Name))
 		}
-		s.transport.Send(NewSuccessResponse(req.ID, ToolCallResult{
+		s.send(req, NewSuccessResponse(req.ID, ToolCallResult{
 			Content: []ContentBlock{ErrorContent(err)},
 			IsError: true,
 		}))
@@ -186,8 +232,24 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) {
 	if progressToken != nil {
 		_ = s.transport.Send(NewProgressNotification(progressToken, 1, 1, "completed "+params.Name))
 	}
-	s.transport.Send(NewSuccessResponse(req.ID, result))
-	_ = s.transport.Send(NewResourceUpdatedNotification("akemi://scan/current/summary"))
+	s.send(req, NewSuccessResponse(req.ID, result))
+	s.notifyScanResources()
+}
+
+// notifyScanResources tells MCP clients that the derived current-scan
+// resources should be refreshed after a tool call. Notifying only the summary
+// leaves clients that cache vulnerabilities, URLs, or endpoints with stale
+// values even though those resources are derived from the same state store.
+func (s *Server) notifyScanResources() {
+	if s == nil || s.resources == nil || s.transport == nil {
+		return
+	}
+	for _, resource := range s.resources.List() {
+		if !strings.HasPrefix(resource.URI, "akemi://scan/current/") {
+			continue
+		}
+		_ = s.transport.Send(NewResourceUpdatedNotification(resource.URI))
+	}
 }
 
 func (s *Server) callTool(ctx context.Context, name string, args map[string]interface{}) (*ToolCallResult, error) {
@@ -214,50 +276,50 @@ func progressToken(meta map[string]interface{}) interface{} {
 func (s *Server) handleResourcesList(req *Request) {
 	resources := s.resources.List()
 	result := ResourcesListResult{Resources: resources}
-	s.transport.Send(NewSuccessResponse(req.ID, result))
+	s.send(req, NewSuccessResponse(req.ID, result))
 }
 
 func (s *Server) handleResourcesRead(req *Request) {
 	var params ResourceReadParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		s.transport.Send(NewErrorResponse(req.ID, ErrInvalidParams,
+		s.send(req, NewErrorResponse(req.ID, ErrInvalidParams,
 			"invalid resource read params", err.Error()))
 		return
 	}
 
 	contents, err := s.resources.Read(params.URI)
 	if err != nil {
-		s.transport.Send(NewErrorResponse(req.ID, ErrInvalidParams,
+		s.send(req, NewErrorResponse(req.ID, ErrInvalidParams,
 			"resource not found", err.Error()))
 		return
 	}
 
 	result := ResourceReadResult{Contents: contents}
-	s.transport.Send(NewSuccessResponse(req.ID, result))
+	s.send(req, NewSuccessResponse(req.ID, result))
 }
 
 func (s *Server) handlePromptsList(req *Request) {
 	prompts := s.prompts.List()
 	result := PromptsListResult{Prompts: prompts}
-	s.transport.Send(NewSuccessResponse(req.ID, result))
+	s.send(req, NewSuccessResponse(req.ID, result))
 }
 
 func (s *Server) handlePromptsGet(req *Request) {
 	var params PromptGetParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		s.transport.Send(NewErrorResponse(req.ID, ErrInvalidParams,
+		s.send(req, NewErrorResponse(req.ID, ErrInvalidParams,
 			"invalid prompt get params", err.Error()))
 		return
 	}
 
 	result, err := s.prompts.Get(params.Name, params.Arguments)
 	if err != nil {
-		s.transport.Send(NewErrorResponse(req.ID, ErrInvalidParams,
+		s.send(req, NewErrorResponse(req.ID, ErrInvalidParams,
 			"prompt not found", err.Error()))
 		return
 	}
 
-	s.transport.Send(NewSuccessResponse(req.ID, result))
+	s.send(req, NewSuccessResponse(req.ID, result))
 }
 
 // Handler routes JSON-RPC methods to the appropriate server logic.

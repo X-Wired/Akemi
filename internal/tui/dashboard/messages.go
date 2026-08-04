@@ -8,6 +8,7 @@ import (
 	"Akemi/internal/assistant"
 	core "Akemi/internal/core"
 	"Akemi/internal/engagement"
+	"Akemi/internal/execution"
 	"Akemi/internal/toolbridge"
 )
 
@@ -60,11 +61,17 @@ type ScanProgressMsg struct {
 	Phase      string // current phase name
 }
 
+// RunStateMsg mirrors the shared execution lifecycle in the TUI.
+type RunStateMsg struct {
+	Run *execution.Run
+}
+
 // DiscoveryItemMsg appends one live discovery row to the dashboard.
 type DiscoveryItemMsg struct {
 	Section string
 	Key     string
 	Item    string
+	Detail  string
 	Phase   string
 }
 
@@ -273,6 +280,12 @@ type SystemTickMsg struct{}
 
 // AgentTickMsg triggers an agent log refresh.
 type AgentTickMsg struct{}
+
+// CursorBlinkMsg updates the visibility of the caret shown in editable fields.
+// The dashboard owns the timer so every terminal input uses the same phase.
+type CursorBlinkMsg struct {
+	Visible bool
+}
 
 // =============================================================================
 // Operation deduplication messages

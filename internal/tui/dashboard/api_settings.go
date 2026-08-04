@@ -25,10 +25,11 @@ const (
 )
 
 type apiSettingsModal struct {
-	visible bool
-	focus   int
-	busy    bool
-	status  string
+	visible       bool
+	focus         int
+	busy          bool
+	cursorVisible bool
+	status        string
 
 	settings        APISettings
 	selectedField   int
@@ -45,6 +46,7 @@ func newAPISettingsModal() *apiSettingsModal {
 	m := &apiSettingsModal{
 		settings:      defaultAPISettings("deepseek"),
 		selectedField: -1,
+		cursorVisible: true,
 		status:        "Loading API settings...",
 	}
 	m.syncNumericText()
@@ -53,6 +55,7 @@ func newAPISettingsModal() *apiSettingsModal {
 
 func (m *apiSettingsModal) open() {
 	m.visible = true
+	m.cursorVisible = true
 	m.focus = apiFieldProvider
 	m.selectedField = -1
 	m.selectedDirty = false
@@ -202,16 +205,20 @@ func (m *apiSettingsModal) activateFocused() {
 		if isEditableAPIField(m.focus) {
 			m.selectedField = m.focus
 			m.selectedDirty = false
+			m.cursorVisible = true
 		}
 	}
 	m.settings = normalizeAPISettings(m.settings)
 }
 
 func (m *apiSettingsModal) cycleProvider() {
-	if m.settings.Provider == "openai" {
-		m.settings = mergeAPISettings(m.settings, defaultAPISettings("deepseek"))
-	} else {
+	switch m.settings.Provider {
+	case "deepseek":
 		m.settings = mergeAPISettings(m.settings, defaultAPISettings("openai"))
+	case "openai":
+		m.settings = mergeAPISettings(m.settings, defaultAPISettings("gemini"))
+	default:
+		m.settings = mergeAPISettings(m.settings, defaultAPISettings("deepseek"))
 	}
 	m.syncNumericText()
 }
@@ -339,9 +346,9 @@ func (m *apiSettingsModal) view(width, height int) string {
 	}
 	rows := []string{
 		PanelTitleFocused.Render("API Settings"),
-		DimText.Render("DeepSeek first, OpenAI second. Apply saves API settings to akemi.conf."),
+		DimText.Render("DeepSeek, OpenAI, or Gemini. Apply saves API settings to akemi.conf."),
 		"",
-		m.row(apiFieldProvider, "Provider", optionLabel(m.settings.Provider == "deepseek", "deepseek", "openai")),
+		m.row(apiFieldProvider, "Provider", optionListLabel(m.settings.Provider, []string{"deepseek", "openai", "gemini"})),
 		m.row(apiFieldModel, "Model", m.settings.Model),
 		m.row(apiFieldBaseURL, "Base URL", m.settings.BaseURL),
 		m.row(apiFieldAPIKey, "API Key", m.apiKeyDisplay()),
@@ -375,6 +382,9 @@ func (m *apiSettingsModal) row(field int, label, value string) string {
 		value = DimText.Render("<empty>")
 	}
 	if m.focus == field && m.selectedField == field && isEditableAPIField(field) {
+		if m.cursorVisible {
+			value += AccentText.Render("█")
+		}
 		value += DimText.Render("  selected")
 	}
 	line := fmt.Sprintf("%-13s %s", label, value)
@@ -429,12 +439,21 @@ func (m *apiSettingsModal) reasoningValue() string {
 }
 
 func defaultAPISettings(provider string) APISettings {
-	switch provider {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "openai":
 		return APISettings{
 			Provider:        "openai",
 			Model:           "gpt-4o-mini",
 			BaseURL:         "https://api.openai.com/v1",
+			MaxTokens:       4096,
+			Temperature:     0.3,
+			ReasoningEffort: "high",
+		}
+	case "google", "gemini":
+		return APISettings{
+			Provider:        "gemini",
+			Model:           "gemini-3.6-flash",
+			BaseURL:         "https://generativelanguage.googleapis.com/v1beta/openai",
 			MaxTokens:       4096,
 			Temperature:     0.3,
 			ReasoningEffort: "high",
@@ -453,8 +472,11 @@ func defaultAPISettings(provider string) APISettings {
 
 func normalizeAPISettings(settings APISettings) APISettings {
 	provider := strings.ToLower(strings.TrimSpace(settings.Provider))
-	if provider != "openai" {
+	if provider != "openai" && provider != "google" && provider != "gemini" {
 		provider = "deepseek"
+	}
+	if provider == "google" {
+		provider = "gemini"
 	}
 	def := defaultAPISettings(provider)
 	settings.Provider = provider
@@ -516,6 +538,18 @@ func optionLabel(firstSelected bool, first, second string) string {
 		return fmt.Sprintf("[%s] / %s", first, second)
 	}
 	return fmt.Sprintf("%s / [%s]", first, second)
+}
+
+func optionListLabel(current string, options []string) string {
+	parts := make([]string, 0, len(options))
+	for _, opt := range options {
+		if opt == current || (current == "google" && opt == "gemini") || (current == "gemini" && opt == "google") {
+			parts = append(parts, fmt.Sprintf("[%s]", opt))
+		} else {
+			parts = append(parts, opt)
+		}
+	}
+	return strings.Join(parts, " / ")
 }
 
 func parseInt(value string, fallback int) int {

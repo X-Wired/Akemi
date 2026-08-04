@@ -252,10 +252,22 @@ func isWindows() bool {
 // extractHost parses a target string that may be a URL and returns the bare
 // hostname. If the string is already a plain host or IP, it is returned as-is.
 func extractHost(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-		if parsed, err := url.Parse(target); err == nil && parsed.Host != "" {
+		if parsed, err := url.Parse(target); err == nil && parsed.Hostname() != "" {
 			return parsed.Hostname()
 		}
+	}
+	target = strings.TrimPrefix(target, "http://")
+	target = strings.TrimPrefix(target, "https://")
+	if host, _, err := net.SplitHostPort(target); err == nil && host != "" {
+		return host
+	}
+	if i := strings.IndexAny(target, "/:"); i >= 0 {
+		target = target[:i]
 	}
 	return target
 }
@@ -281,6 +293,11 @@ func resolveHostIPs(host string) ([]string, error) {
 // used, avoiding ~200 ms of process-spawn + JSON-pipe overhead (Phase 1.4).
 // All other scans use the full Rust Akemi-Spear engine.
 func (s *PortScanner) Run() (*PortScanSummary, error) {
+	return s.RunContext(context.Background())
+}
+
+// RunContext executes a scan and propagates cancellation into every engine.
+func (s *PortScanner) RunContext(ctx context.Context) (*PortScanSummary, error) {
 	s.Host = extractHost(s.Host)
 
 	if proxy.ProxyEnabled() {
@@ -292,10 +309,10 @@ func (s *PortScanner) Run() (*PortScanSummary, error) {
 
 	// ── Phase 1.4: Go-native fast path ──────────────────────────
 	if s.canUseGoNative() {
-		return s.runGoNative()
+		return s.runGoNative(ctx)
 	}
 
-	return s.runRustEngine()
+	return s.runRustEngine(ctx)
 }
 
 // canUseGoNative returns true when the scan is small enough to run
@@ -308,7 +325,13 @@ func (s *PortScanner) canUseGoNative() bool {
 }
 
 // runGoNative performs a lightweight TCP connect scan using goroutines.
-func (s *PortScanner) runGoNative() (*PortScanSummary, error) {
+func (s *PortScanner) runGoNative(ctx context.Context) (*PortScanSummary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	start := time.Now()
 
 	ips, err := resolveHostIPs(s.Host)
@@ -355,7 +378,7 @@ func (s *PortScanner) runGoNative() (*PortScanSummary, error) {
 			defer func() { <-sem }()
 
 			target := net.JoinHostPort(ips[0], strconv.Itoa(p))
-			conn, err := dialer.DialContext(context.Background(), "tcp", target)
+			conn, err := dialer.DialContext(ctx, "tcp", target)
 			if err == nil {
 				conn.Close()
 				mu.Lock()
@@ -392,7 +415,13 @@ func (s *PortScanner) runGoNative() (*PortScanSummary, error) {
 }
 
 // runRustEngine invokes the external Akemi-Spear binary (original path).
-func (s *PortScanner) runRustEngine() (*PortScanSummary, error) {
+func (s *PortScanner) runRustEngine(ctx context.Context) (*PortScanSummary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	binPath, searched := findScannerBinary()
 	if binPath == "" {
 		return nil, fmt.Errorf(
@@ -453,7 +482,7 @@ func (s *PortScanner) runRustEngine() (*PortScanSummary, error) {
 		scanTimeout = 30 * time.Minute
 	}
 
-	cmd := exec.Command(binPath, "--stdin")
+	cmd := exec.CommandContext(ctx, binPath, "--stdin")
 	cmd.Stdin = strings.NewReader(string(reqJSON))
 
 	// Capture stderr for progress/log output (display in real-time)

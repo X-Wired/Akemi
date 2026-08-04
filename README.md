@@ -2,8 +2,8 @@
 
 # Akemi: Autonomous Attack Surface Management
 
-> ⚠️ **Nightly Build (v2.0.0-dev)** — This branch contains active development. Things may break.
-> For the stable release, see the [Releases page](https://github.com/your-org/akemi/releases) and download **Akemi v1.0.0**.
+> ✅ **v2.1.0 development snapshot** — This release includes the v2 MCP server and autonomous agent tooling.
+> For source, release notes, and downloads, visit [X-Wired/Akemi](https://github.com/X-Wired/Akemi).
 
 **Akemi v2** is an AI-augmented, modular attack surface management framework that combines high-performance reconnaissance with LLM-driven autonomous agents. It can map, probe, and validate entire attack surfaces — either manually via CLI or autonomously through an AI agent that plans and executes engagements for you.
 
@@ -11,6 +11,19 @@ The framework integrates high-speed network triage (Akemi-Spear), deep web disco
 
 ---
 
+## 2.1 safety and result contract
+
+The current 2.1 tree is a pre-stable development snapshot. Target-interacting
+tools use a shared scoped run context: explicit root domains may authorize
+their subdomains, while unrelated domains and discovered IPs remain outside
+scope. Active and intrusive work can run autonomously inside that scope;
+destructive actions require explicit approval.
+
+Tool responses retain legacy fields and include an _akemi status metadata object.
+Cookies, credentials, CSRF tokens, and other secrets are masked in MCP output,
+assistant context, reports, and archives by default.
+
+![Akemi 2.1 dashboard](Pictures/Screenshot.png)
 ## ⚡ Key Highlights
 
 ### 🤖 LLM Agent System (NEW in v2)
@@ -120,7 +133,7 @@ probes/                    YAML vulnerability templates
 
 ## 🚀 Quick Start
 
-> ⚠️ **This is v2.0.0 nightly.** For stable v1.0.0, grab a pre-built binary from the [Releases page](https://github.com/your-org/akemi/releases).
+> ✅ **Akemi v2.1.0 is under active stabilization.** Build from source below, or check [GitHub releases](https://github.com/X-Wired/Akemi/releases) for packaged binaries.
 
 ### Configuration
 
@@ -140,8 +153,10 @@ Use the provided PowerShell script to build optimized binaries for Windows and L
 ```
 
 **Requirements:**
-- Go `1.25.0` or higher
-- Rust stable toolchain (for Akemi-Spear and DotHound)
+- Go `1.24.0` (the CI version)
+- Rust `1.85.0` (for Akemi-Spear and DotHound)
+- Docker Desktop or Docker Engine for container builds (optional)
+- libpcap/Npcap and the required privileges only for SYN scanning
 
 ### Linux Installation
 
@@ -165,7 +180,7 @@ The script will:
 ### 1. Autonomous Agent Engagement (NEW)
 Let the LLM agent plan and execute a full attack surface mapping:
 ```bash
-Akemi.exe agent --goal "Map the attack surface of example.com, discover subdomains, scan top 1000 ports, and probe for SQLi"
+Akemi.exe agent --target https://app.example.com --intent full_surface_map
 ```
 
 ### 2. Full Surface Mapping (Manual)
@@ -177,7 +192,7 @@ Akemi.exe -u https://target.com --crawl --depth 3 --params --js --scrape --graph
 ### 3. Infrastructure Triage & Port Scanning
 Leverage Akemi-Spear for high-speed scanning:
 ```bash
-Akemi.exe --targets targets.txt --port-scan -p 80,443,8080 --rate 1000
+Akemi.exe --targets targets.txt --port-scan-ports 80,443,8080 --rate 1000
 ```
 
 ### 4. Vulnerability Probing
@@ -189,7 +204,7 @@ Akemi.exe -u https://target.com --vuln-check --vuln-check-tags sqli,lfi
 ### 5. MCP Server Mode (NEW)
 Expose Akemi as a tool source for Claude Desktop:
 ```bash
-Akemi.exe serve --mcp-transport stdio
+Akemi.exe serve --transport stdio
 ```
 
 ### 6. TUI Dashboard (NEW)
@@ -206,12 +221,75 @@ Akemi.exe -u https://target.com --crawl --graph --report-dir ./results
 ![Akemi Surface Map](Pictures/Akemi_Surface_Map.png)
 ---
 
-## 📄 License
+## Installation and compilation reference
+
+Create a local configuration before running provider-backed features. The configuration can contain LLM-provider credentials, so `akemi.conf` is intentionally ignored and must never be committed.
+
+```bash
+git clone https://github.com/X-Wired/Akemi.git
+cd Akemi
+cp akemi.conf.example akemi.conf
+```
+
+On Windows PowerShell:
+
+```powershell
+Copy-Item akemi.conf.example akemi.conf
+```
+
+Build the core CLI directly when you only need the Go application:
+
+```bash
+go test ./...
+go build -buildvcs=false -trimpath -o bin/Akemi ./cmd/Akemi
+./bin/Akemi --version
+```
+
+`build.ps1` builds the Go CLI and the Rust tools. Its Linux cross-build needs the matching Rust target and linker; building under Linux or WSL is usually simpler for Linux releases.
+
+```powershell
+./build.ps1
+```
+
+Build the Rust components directly with locked dependencies:
+
+```bash
+(cd Akemi-Spear && cargo test --locked && cargo build --release --locked)
+(cd DotHound && cargo test --locked && cargo build --release --locked)
+```
+
+For a containerized build:
+
+```bash
+docker build --build-arg GO_VERSION=1.24 --build-arg RUST_VERSION=1.85 -t akemi:2.1 .
+docker run --rm akemi:2.1 --version
+```
+
+Akemi keeps local project databases, archives, and run output under `workemi/`. This directory, `.akemi` archives, and SQLite databases are ignored so engagement data remains local.
+
+## 2.1 operating model
+
+Version 2.1 routes target-interacting work through a common execution boundary. It applies configured scope, risk ceilings, cancellation, request/concurrency/response limits, result normalization, and secret redaction. Root domains only include their subdomains when configured; unrelated domains and discovered IPs stay outside scope. Destructive actions require explicit approval and otherwise fail closed.
+
+Use Akemi only for authorized web discovery, infrastructure triage, template-based validation, agent-assisted engagements, MCP integration, and project workflows. The examples above show the supported CLI entry points; use `Akemi.exe <command> --help` for command-specific flags.
+
+## CI/CD checks
+
+The GitHub Actions pipeline validates release assumptions, Go linting and race-enabled tests, Windows/Linux Go builds, locked Rust tests and builds, Docker image and HTTP-MCP smoke tests, and Go/Rust dependency audits. Before a pull request, run the checks supported by your platform:
+
+```bash
+go test ./...
+go vet ./...
+docker compose --profile server config
+```
+
+
+## License
 
 This tool is provided for educational purposes and authorized security assessments only. Do not use this tool for any illegal activities. You may fork, modify, and share it with the community. Redistribution or sale of this software is not authorized.
 
 ---
 
-> 🏗️ **Akemi v2.0.0-dev** — under active development. For the stable v1.0.0 release, visit the [Releases page](https://github.com/your-org/akemi/releases).
+> 🏗️ **Akemi v2.1.0** — pre-stable release candidate with MCP server/client and autonomous agent support. Visit [GitHub releases](https://github.com/X-Wired/Akemi/releases) for downloads.
 
 

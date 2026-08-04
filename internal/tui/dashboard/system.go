@@ -36,6 +36,8 @@ type SystemPanel struct {
 	netRecvRate   float64
 	numGoroutines int
 	uptime        time.Duration
+	runID         string
+	runStatus     string
 	startTime     time.Time
 
 	// For network rate calculation
@@ -188,6 +190,11 @@ func (sp *SystemPanel) View() string {
 		title = PanelTitleFocused
 	}
 	sb.WriteString(title.Render("③ System Usage"))
+	if sp.runStatus != "" {
+		spRun := fmt.Sprintf("  RUN %s  %s", truncate(sp.runID, 18), strings.ToUpper(sp.runStatus))
+		sb.WriteString(DimText.Render(spRun))
+		sb.WriteString("\n")
+	}
 	sb.WriteString("\n\n")
 
 	sb.WriteString(sp.renderBar("CPU", sp.cpuPercent, 100))

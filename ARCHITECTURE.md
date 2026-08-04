@@ -1,4 +1,4 @@
-# Akemi Architecture (v2.0.0-dev)
+# Akemi Architecture (v2.1.0)
 ## Ai generated
 ## Design Principles
 
@@ -14,6 +14,26 @@
 
 ---
 
+## 2.1 execution contract
+
+All target-interacting MCP, assistant, agent, and dashboard operations enter
+the shared internal/execution boundary. The boundary resolves a run context,
+validates arguments and scope, checks the risk ceiling, applies cancellation,
+request/concurrency/response limits, executes the compatibility handler,
+normalizes and redacts results, stores bounded run state, and emits events.
+
+Root domains authorize subdomains only when explicitly configured. Exact hosts
+and authorized CIDRs remain allow-list entries; DNS results do not expand scope.
+Redirects are checked before follow-up requests. Active and intrusive operations
+are autonomous within scope by default. Destructive operations remain approval
+gated and fail closed without an approval backend.
+
+Structured results preserve legacy fields and add an _akemi metadata object with
+schema version, run ID, status, metrics, and redaction notices. The TUI displays
+the same run status, effective scope, and policy ceiling used by MCP and agents.
+2.1 remains pre-stable until the release CI gates pass on a clean checkout.
+
+---
 ## Directory Layout
 
 ```

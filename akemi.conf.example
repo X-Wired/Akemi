@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# Akemi v2.0.0 — Environment Configuration (EXAMPLE)
+# Akemi v2.1.0 — Environment Configuration (EXAMPLE)
 # ═══════════════════════════════════════════════════════════════════
 # Copy this file to akemi.conf and fill in your values.
 #   cp akemi.conf.example akemi.conf
@@ -11,6 +11,12 @@
 
 # ── General ──────────────────────────────────────────────────────
 [general]
+# First-opening configuration state (0 = unconfigured wizard prompt, 1 = configured)
+configured = 0
+
+# Default directory for project .akemi files (relative to workemi or custom path)
+projects_dir = "Projects"
+
 # Log level: debug, info, warn, error
 log_level = "info"
 
@@ -257,11 +263,11 @@ enabled = true
 api_key = ""
 
 # Default model
-# Options: gemini-2.0-flash-exp, gemini-1.5-pro, gemini-1.5-flash
-model = "gemini-2.0-flash-exp"
+# Options: gemini-3.6-flash, gemini-3.1-flash, gemini-3.1-pro, gemini-2.5-flash, gemini-2.5-pro
+model = "gemini-3.6-flash"
 
 # API base URL
-base_url = "https://generativelanguage.googleapis.com/v1beta"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 # Max tokens
 max_tokens = 4096
@@ -386,7 +392,7 @@ enable_dothound = true
 max_body_capture = 1048576  # 1 MB
 
 # User-Agent string for HTTP requests
-user_agent = "Akemi/2.0.0 (Security Assessment Framework)"
+user_agent = "Akemi/2.1.0 (Security Assessment Framework)"
 
 # Follow redirects automatically
 follow_redirects = true

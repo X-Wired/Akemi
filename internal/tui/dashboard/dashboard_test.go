@@ -2,6 +2,8 @@ package dashboard
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -152,7 +154,7 @@ func TestFullSurfaceScanAliasUsesFullSurfaceMapWorkflow(t *testing.T) {
 }
 
 func TestDashboardPollContinuesAfterLiveEvent(t *testing.T) {
-	d := NewDashboard(DashboardServices{})
+	d := NewDashboard(DashboardServices{Configured: 1})
 	d.send(ScanProgressMsg{Phase: "Crawling"})
 
 	msg, ok := d.pollEvents()().(dashboardPolledMsg)
@@ -211,7 +213,7 @@ func TestTargetProgressBarFitsPanelWidth(t *testing.T) {
 }
 
 func TestDashboardViewFitsTerminalWhileScanning(t *testing.T) {
-	d := NewDashboard(DashboardServices{})
+	d := NewDashboard(DashboardServices{Configured: 1})
 	model, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	d = model.(*Dashboard)
 	model, _ = d.Update(ScanStartedMsg{
@@ -239,7 +241,7 @@ func TestDashboardViewFitsTerminalWhileScanning(t *testing.T) {
 }
 
 func TestDashboardUsesAllocatedSpaceAndShowsTargetActions(t *testing.T) {
-	d := NewDashboard(DashboardServices{})
+	d := NewDashboard(DashboardServices{Configured: 1})
 	model, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	d = model.(*Dashboard)
 
@@ -258,7 +260,7 @@ func TestDashboardUsesAllocatedSpaceAndShowsTargetActions(t *testing.T) {
 }
 
 func TestDashboardKeepsSystemCompactAndPrioritizesTarget(t *testing.T) {
-	d := NewDashboard(DashboardServices{})
+	d := NewDashboard(DashboardServices{Configured: 1})
 	model, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	d = model.(*Dashboard)
 
@@ -280,7 +282,7 @@ func TestDashboardKeepsSystemCompactAndPrioritizesTarget(t *testing.T) {
 }
 
 func TestDashboardMouseDragResizesAndPersistsRatiosAcrossTerminalResize(t *testing.T) {
-	d := NewDashboard(DashboardServices{})
+	d := NewDashboard(DashboardServices{Configured: 1})
 	model, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	d = model.(*Dashboard)
 
@@ -333,8 +335,53 @@ func TestDiscoveryEnterRequestsCopyWhenDetailOpen(t *testing.T) {
 	}
 }
 
+func TestSecretDetailRevealsFullFindingOnlyAfterEnter(t *testing.T) {
+	dp := NewDiscoveryPanel()
+	dp.SetSize(100, 30)
+	masked := `[API Key] apiKey:"Abcdefghijkl...` + `" from https://x.test/a.js`
+	full := `[API Key] apiKey:"Abcdefghijklmnopqrstuvwxyz0123456789" from https://x.test/a.js`
+	dp.AddItemWithKeyAndDetail("Secrets", "secret-key", masked, full)
+	dp.activeTab = 4
+
+	if strings.Contains(dp.View(), full) {
+		t.Fatal("full secret should not be visible in the list view")
+	}
+
+	_, _ = dp.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !dp.detailMode {
+		t.Fatal("enter should open the selected secret detail")
+	}
+	if dp.detailItem != full {
+		t.Fatalf("unexpected revealed secret detail: %q", dp.detailItem)
+	}
+	if !strings.Contains(dp.View(), full[:16]) {
+		t.Fatal("full secret should be visible in the opened detail view")
+	}
+}
+
+func TestTargetInputCaretBlinks(t *testing.T) {
+	tp := NewTargetPanel()
+	tp.SetSize(60, 24)
+	tp.Focus(true)
+	tp.fields[fieldTarget].value = "google.com"
+
+	_, _ = tp.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(tp.View(), "█") {
+		t.Fatal("editing target should show a caret")
+	}
+
+	_, _ = tp.Update(CursorBlinkMsg{Visible: false})
+	if strings.Contains(tp.View(), "█") {
+		t.Fatal("hidden caret phase should remove the caret")
+	}
+
+	_, _ = tp.Update(CursorBlinkMsg{Visible: true})
+	if !strings.Contains(tp.View(), "█") {
+		t.Fatal("visible caret phase should restore the caret")
+	}
+}
 func TestCopyTextForFocusStripsANSI(t *testing.T) {
-	d := NewDashboard(DashboardServices{})
+	d := NewDashboard(DashboardServices{Configured: 1})
 	model, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	d = model.(*Dashboard)
 	label, text := d.copyTextForFocus()
@@ -346,5 +393,104 @@ func TestCopyTextForFocusStripsANSI(t *testing.T) {
 	}
 	if !strings.Contains(text, "Target Configuration") {
 		t.Fatalf("copied target text missing panel title: %q", text)
+	}
+}
+
+func TestFirstRunSetupModalRendersAndSavesConfig(t *testing.T) {
+	d := NewDashboard(DashboardServices{Configured: 0, ConfigPath: filepath.Join(t.TempDir(), "akemi.conf")})
+	model, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	d = model.(*Dashboard)
+
+	if d.firstRunSetup == nil || !d.firstRunSetup.visible {
+		t.Fatalf("firstRunSetup modal should be visible on unconfigured first run")
+	}
+
+	view := d.View()
+	if !strings.Contains(view, "Welcome to Akemi") || !strings.Contains(view, "Projects Directory:") {
+		t.Fatalf("expected setup modal view content, got %q", view)
+	}
+}
+
+func TestSaveRunDefaultsToProjectArchiveDirectory(t *testing.T) {
+	archiveDir := t.TempDir()
+	d := NewDashboard(DashboardServices{Configured: 1, ArchiveDir: archiveDir})
+	d.target.fields[fieldTarget].value = "https://example.test"
+	d.discovery.AddItemWithKey("URLs", "https://example.test", "https://example.test")
+
+	msg, ok := d.saveRun()().(RunSavedMsg)
+	if !ok {
+		t.Fatal("saveRun returned an unexpected message")
+	}
+	if msg.Error != "" {
+		t.Fatalf("saveRun failed: %s", msg.Error)
+	}
+	want := filepath.Join(archiveDir, "example.test", "example.test.akemi")
+	if msg.Path != want {
+		t.Fatalf("saveRun path = %q, want %q", msg.Path, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("saved archive missing: %v", err)
+	}
+}
+func TestSaveRunUsesActiveArchivePathWithoutPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "current.akemi")
+	d := NewDashboard(DashboardServices{Configured: 1})
+	d.currentArchivePath = path
+	d.target.fields[fieldTarget].value = "https://example.test"
+	d.discovery.AddItemWithKey("URLs", "https://example.test", "https://example.test")
+
+	msg, ok := d.saveRun()().(RunSavedMsg)
+	if !ok {
+		t.Fatal("saveRun returned an unexpected message")
+	}
+	if msg.Error != "" {
+		t.Fatalf("saveRun failed: %s", msg.Error)
+	}
+	if msg.Path != path {
+		t.Fatalf("saveRun path = %q, want %q", msg.Path, path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("saved archive missing: %v", err)
+	}
+}
+
+func TestSaveButtonRequestsImmediateSave(t *testing.T) {
+	tp := NewTargetPanel()
+	tp.cursor = fieldSave
+	tp.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if !tp.SaveRunRequested {
+		t.Fatal("Save Run did not request an immediate save")
+	}
+	if tp.PathPromptActive() {
+		t.Fatal("Save Run should not ask for a destination path")
+	}
+}
+
+func TestCtrlCSavesBeforeQuitting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "autosave.akemi")
+	d := NewDashboard(DashboardServices{Configured: 1})
+	d.currentArchivePath = path
+	d.target.fields[fieldTarget].value = "https://example.test"
+	d.discovery.AddItemWithKey("URLs", "https://example.test", "https://example.test")
+
+	cmd, handled := d.handleGlobalKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !handled || cmd == nil {
+		t.Fatal("Ctrl+C was not handled as save and quit")
+	}
+	autosave, ok := cmd().(autoSaveQuitMsg)
+	if !ok {
+		t.Fatal("Ctrl+C did not wait for the autosave result")
+	}
+	if autosave.Error != "" {
+		t.Fatalf("autosave failed: %s", autosave.Error)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("autosaved archive missing: %v", err)
+	}
+
+	_, quit := d.Update(autosave)
+	if quit == nil {
+		t.Fatal("dashboard did not quit after a successful autosave")
 	}
 }

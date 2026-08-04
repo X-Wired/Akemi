@@ -74,7 +74,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	logger.Info("Akemi MCP Server starting",
-		slog.String("version", "2.0.0-dev"),
+		slog.String("version", CurrentVersion()),
 		slog.String("transport", transport),
 		slog.Int("templates_loaded", len(svc.Vuln.ListTemplates())),
 	)
@@ -132,6 +132,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Transport: t,
 		Logger:    logger,
 		Tools:     toolReg,
+		Version:   CurrentVersion(),
 		Resources: resourceProv,
 		Prompts:   promptProv,
 	})

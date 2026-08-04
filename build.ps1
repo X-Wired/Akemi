@@ -15,13 +15,13 @@ function Invoke-GoBuild($name, $sourcePath, $windowsOut, $linuxOut) {
     Write-Host "`n[*] Building $name (Go) for Windows..."
     $env:GOOS = "windows"
     $env:GOARCH = "amd64"
-    go build -o $windowsOut $sourcePath
+    go build -buildvcs=false -o $windowsOut $sourcePath
     Write-Host "[+] Binary: $windowsOut"
 
     Write-Host "[*] Building $name (Go) for Linux..."
     $env:GOOS = "linux"
     $env:GOARCH = "amd64"
-    go build -o $linuxOut $sourcePath
+    go build -buildvcs=false -o $linuxOut $sourcePath
     Write-Host "[+] Binary: $linuxOut"
 
     Remove-Item Env:GOOS -ErrorAction SilentlyContinue

@@ -116,7 +116,7 @@ func buildDashboardAPISettingsTest() func(dashboard.APISettings) error {
 func buildDashboardAPISettingsApply(svc *Services, logger *slog.Logger) func(dashboard.APISettings) (*assistant.Session, error) {
 	return func(settings dashboard.APISettings) (*assistant.Session, error) {
 		provider := akemiconfig.NormalizeLLMProvider(settings.Provider)
-		if provider != "deepseek" && provider != "openai" {
+		if provider != "deepseek" && provider != "openai" && provider != "google" {
 			return nil, fmt.Errorf("unsupported dashboard provider %q", settings.Provider)
 		}
 		if _, err := akemiconfig.UpdateLLMProviderSettings("", akemiconfig.LLMProviderSettings{
@@ -160,6 +160,10 @@ func buildAssistantSessionFromConfigWithConversation(svc *Services, logger *slog
 	}
 
 	var sources []mcpclient.Source
+	workspaceDir := rootOutputDir
+	if svc != nil && svc.Project != nil {
+		workspaceDir = svc.Project.Root
+	}
 	if cfg.MCPClient.Enabled {
 		for _, server := range cfg.MCPClient.Servers {
 			if !server.Enabled || server.Transport != "inprocess" || server.Name != "akemi" {
@@ -173,7 +177,9 @@ func buildAssistantSessionFromConfigWithConversation(svc *Services, logger *slog
 				Reporter:      svc.Reporting,
 				Context:       svc.MCPContext,
 				ReportDir:     rootOutputDir,
+				WorkspaceDir:  workspaceDir,
 				Logger:        logger,
+				Execution:     svc.Execution,
 			})
 			sources = append(sources, mcpclient.Source{
 				Name:     server.Name,
@@ -203,7 +209,7 @@ func buildAssistantSessionFromConfigWithConversation(svc *Services, logger *slog
 
 func dashboardAPISettingsFromConfig(cfg akemiconfig.LLMConfig) dashboard.APISettings {
 	provider := akemiconfig.NormalizeLLMProvider(cfg.Provider)
-	if provider != "openai" {
+	if provider != "openai" && provider != "google" {
 		provider = "deepseek"
 	}
 	vendor := cfg.GetProvider(provider)

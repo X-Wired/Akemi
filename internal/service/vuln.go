@@ -139,9 +139,10 @@ func (s *VulnService) Probe(ctx context.Context, targetURL string, cfg core.Prob
 		Fingerprint:  cfg.Fingerprint,
 		Prioritize:   cfg.Prioritize,
 		Quiet:        true,
+		Context:      ctx,
 	}
 
-	findings, err := vuln.ProbeParams(targetURL, probeCfg)
+	findings, err := vuln.ProbeParamsWithCandidates(targetURL, nil, probeCfg)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "vulnerability probe failed",
 			slog.String("url", targetURL),

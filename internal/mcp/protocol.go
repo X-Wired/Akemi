@@ -5,7 +5,10 @@
 // Spec: https://modelcontextprotocol.io/
 package mcp
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 
 // =============================================================================
 // JSON-RPC 2.0 Base Types
@@ -19,10 +22,12 @@ const ProtocolVersion = "2025-11-25"
 
 // Request represents a JSON-RPC request.
 type Request struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}     `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
+	JSONRPC string           `json:"jsonrpc"`
+	ID      interface{}      `json:"id,omitempty"`
+	Method  string           `json:"method"`
+	Params  json.RawMessage  `json:"params,omitempty"`
+	Context context.Context  `json:"-"`
+	Reply   chan interface{} `json:"-"`
 }
 
 // Response represents a JSON-RPC success response.
@@ -51,6 +56,7 @@ type Notification struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
+	Context context.Context `json:"-"`
 }
 
 // Standard JSON-RPC error codes.

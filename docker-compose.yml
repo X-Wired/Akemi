@@ -1,4 +1,4 @@
-# Akemi v2.0.0 Docker Compose deployment
+# Akemi v2.1.0 Docker Compose deployment
 # Quick start:
 #   AKEMI_MCP_SERVER_API_KEY=change-me docker compose --profile server up -d
 #
@@ -10,7 +10,7 @@
 services:
   akemi-server:
     build: .
-    image: akemi:2.0.0
+    image: akemi:2.1.0
     container_name: akemi-server
     command:
       - serve
@@ -51,7 +51,7 @@ services:
 
   akemi-cli:
     build: .
-    image: akemi:2.0.0
+    image: akemi:2.1.0
     container_name: akemi-cli
     stdin_open: true
     tty: true
@@ -66,7 +66,7 @@ services:
 
   akemi-tui:
     build: .
-    image: akemi:2.0.0
+    image: akemi:2.1.0
     container_name: akemi-tui
     stdin_open: true
     tty: true

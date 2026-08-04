@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -19,9 +20,11 @@ import (
 
 	akemiarchive "Akemi/internal/archive"
 	"Akemi/internal/assistant"
+	"Akemi/internal/config"
 	core "Akemi/internal/core"
 	"Akemi/internal/dothound"
 	"Akemi/internal/engagement"
+	"Akemi/internal/execution"
 	proxy "Akemi/internal/platform/proxy"
 	"Akemi/internal/project"
 	"Akemi/internal/session"
@@ -57,11 +60,12 @@ type DashboardServices struct {
 	SubEnumerator core.SubEnumerator
 	Reporter      core.Reporter
 
-	Project        *project.Project
-	SessionState   *session.State
-	ArchiveDir     string
-	InitialArchive *akemiarchive.File
-	MCPContext     engagement.ContextStore
+	Project            *project.Project
+	SessionState       *session.State
+	ArchiveDir         string
+	InitialArchive     *akemiarchive.File
+	InitialArchivePath string
+	MCPContext         engagement.ContextStore
 
 	Assistant      *assistant.Session
 	AssistantLoad  func() (*assistant.Session, error)
@@ -70,6 +74,13 @@ type DashboardServices struct {
 	APISettingsLoad  func() (APISettings, error)
 	APISettingsTest  func(APISettings) error
 	APISettingsApply func(APISettings) (*assistant.Session, error)
+
+	Configured  int
+	ConfigPath  string
+	ProjectsDir string
+
+	Execution       *execution.Manager
+	ExecutionPolicy execution.ExecutionPolicy
 }
 
 // Services is kept as a friendly alias for callers/tests that name the TUI
@@ -101,18 +112,21 @@ type Dashboard struct {
 
 	workspace FocusMsg
 
-	target      *TargetPanel
-	discovery   *DiscoveryPanel
-	system      *SystemPanel
-	agent       *AgentPanel
-	apiSettings *apiSettingsModal
+	target        *TargetPanel
+	discovery     *DiscoveryPanel
+	system        *SystemPanel
+	agent         *AgentPanel
+	apiSettings   *apiSettingsModal
+	firstRunSetup *firstRunSetupModal
 
-	services DashboardServices
-	events   chan tea.Msg
-	polling  bool
+	services   DashboardServices
+	currentRun *execution.Run
+	events     chan tea.Msg
+	polling    bool
 
-	showBanner bool
-	ready      bool
+	showBanner    bool
+	ready         bool
+	cursorVisible bool
 
 	workCancel context.CancelFunc
 	workConfig ScanConfig
@@ -134,6 +148,14 @@ type archiveLoadedMsg struct {
 	Path    string
 	Archive *akemiarchive.File
 	Error   string
+}
+
+// autoSaveQuitMsg is emitted after Ctrl+C/Ctrl+Q writes the current archive.
+// A failed save deliberately keeps the dashboard open so the operator can see
+// the error instead of silently losing the current work.
+type autoSaveQuitMsg struct {
+	Path  string
+	Error string
 }
 
 type conversationLoadedMsg struct {
@@ -161,25 +183,41 @@ type clipboardCopyDoneMsg struct {
 
 // NewDashboard creates a dashboard model using the provided service bundle.
 func NewDashboard(services DashboardServices) *Dashboard {
+	if services.Execution == nil {
+		services.Execution = execution.NewManager(100)
+	}
+	if services.ExecutionPolicy.MaxRisk == "" {
+		services.ExecutionPolicy = execution.DefaultPolicy()
+	}
 	d := &Dashboard{
-		splitH:       defaultSplitH,
-		splitV:       defaultSplitV,
-		focus:        FocusTarget,
-		mouseEnabled: true,
-		workspace:    FocusAgent,
-		target:       NewTargetPanel(),
-		discovery:    NewDiscoveryPanel(),
-		system:       NewSystemPanel(),
-		agent:        NewAgentPanel(),
-		apiSettings:  newAPISettingsModal(),
-		services:     services,
-		events:       make(chan tea.Msg, eventBufferSize),
-		showBanner:   true,
+		splitH:        defaultSplitH,
+		splitV:        defaultSplitV,
+		focus:         FocusTarget,
+		mouseEnabled:  true,
+		workspace:     FocusAgent,
+		target:        NewTargetPanel(),
+		discovery:     NewDiscoveryPanel(),
+		system:        NewSystemPanel(),
+		agent:         NewAgentPanel(),
+		apiSettings:   newAPISettingsModal(),
+		firstRunSetup: newFirstRunSetupModal(),
+		services:      services,
+		events:        make(chan tea.Msg, eventBufferSize),
+		showBanner:    true,
+		cursorVisible: true,
 	}
 	d.updateFocus()
 
+	if services.Configured == 0 {
+		cfgPath := services.ConfigPath
+		if cfgPath == "" {
+			cfgPath = config.WorkemiConfigPath()
+		}
+		d.firstRunSetup.open(cfgPath)
+	}
+
 	if services.InitialArchive != nil {
-		d.applyArchive(services.InitialArchive, "")
+		d.applyArchive(services.InitialArchive, services.InitialArchivePath)
 	}
 	if services.Assistant != nil {
 		d.assistant = services.Assistant
@@ -196,6 +234,7 @@ func (d *Dashboard) Init() tea.Cmd {
 		d.discovery.Init(),
 		d.system.Init(),
 		d.agent.Init(),
+		cursorBlinkCmd(),
 		d.scheduleEventPoll(),
 	)
 }
@@ -219,6 +258,19 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, d.scheduleEventPoll())
 		return d, batchCmds(cmds...)
 
+	case CursorBlinkMsg:
+		d.cursorVisible = !d.cursorVisible
+		blink := CursorBlinkMsg{Visible: d.cursorVisible}
+		cmds = append(cmds, d.updatePanels(blink)...)
+		if d.apiSettings != nil {
+			d.apiSettings.cursorVisible = d.cursorVisible
+		}
+		if d.firstRunSetup != nil {
+			d.firstRunSetup.cursorVisible = d.cursorVisible
+		}
+		cmds = append(cmds, cursorBlinkCmd())
+		return d, batchCmds(cmds...)
+
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
 		d.height = msg.Height
@@ -226,13 +278,48 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d.layoutPanels()
 		return d, nil
 
+	case RunStateMsg:
+		if msg.Run != nil {
+			d.currentRun = msg.Run
+			runID := msg.Run.ToolName
+			if msg.Run.Context != nil {
+				runID = msg.Run.Context.ID
+			}
+			d.system.runID = runID
+			d.system.runStatus = string(msg.Run.Status)
+			if msg.Run.Context != nil {
+				d.target.effectiveScope = effectiveScopeSummary(msg.Run.Context.Scope)
+				d.target.effectivePolicy = fmt.Sprintf("max risk=%s, requests=%d, response=%dB", msg.Run.Context.Policy.MaxRisk, msg.Run.Context.Policy.MaxRequests, msg.Run.Context.Policy.MaxResponseBytes)
+			}
+			d.setDashboardStatus(fmt.Sprintf("Run %s: %s", runID, msg.Run.Status))
+		}
 	case toolbridge.Event:
 		cmds = append(cmds, d.handleToolBridgeEvent(msg)...)
 		cmds = append(cmds, d.scheduleEventPoll())
 		return d, batchCmds(cmds...)
 
+	case SetupCompletedMsg:
+		if msg.Error != "" {
+			d.setDashboardStatus("Setup error: " + msg.Error)
+		} else {
+			d.services.Configured = msg.Configured
+			if msg.ProjectsDir != "" {
+				d.services.ArchiveDir = msg.ProjectsDir
+			}
+			d.firstRunSetup.close()
+			d.setDashboardStatus(fmt.Sprintf("Setup saved to %s; configured=%d", msg.ConfigPath, msg.Configured))
+		}
+
 	case tea.KeyMsg:
-		if d.apiSettings.visible {
+		if d.firstRunSetup != nil && d.firstRunSetup.visible {
+			if handled, cmd := d.firstRunSetup.handleKey(msg); handled {
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return d, batchCmds(cmds...)
+			}
+		}
+		if d.apiSettings != nil && d.apiSettings.visible {
 			d.apiSettings.handleKey(msg)
 			cmds = append(cmds, d.consumeAPISettingsRequest())
 			return d, batchCmds(cmds...)
@@ -244,7 +331,10 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
-		if d.apiSettings.visible {
+		if d.firstRunSetup != nil && d.firstRunSetup.visible {
+			return d, nil
+		}
+		if d.apiSettings != nil && d.apiSettings.visible {
 			return d, nil
 		}
 		if !d.mouseEnabled {
@@ -328,6 +418,22 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, d.updatePanels(msg)...)
 
+	case RunSavedMsg:
+		if msg.Error == "" && msg.Path != "" {
+			d.currentArchivePath = msg.Path
+		}
+		cmds = append(cmds, d.updatePanels(msg)...)
+
+	case autoSaveQuitMsg:
+		saved := RunSavedMsg{Path: msg.Path, Error: msg.Error}
+		if msg.Error != "" {
+			cmds = append(cmds, d.updatePanels(saved)...)
+			return d, batchCmds(cmds...)
+		}
+		d.currentArchivePath = msg.Path
+		cmds = append(cmds, d.updatePanels(saved)...)
+		return d, tea.Quit
+
 	case RunLoadedMsg:
 		cmds = append(cmds, d.updatePanels(msg)...)
 
@@ -386,11 +492,17 @@ func (d *Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return d, batchCmds(cmds...)
 }
 
+func cursorBlinkCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return CursorBlinkMsg{}
+	})
+}
+
 func (d *Dashboard) handleGlobalKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch msg.String() {
 	case "ctrl+c", "ctrl+q":
 		d.stopWork()
-		return tea.Quit, true
+		return d.saveAndQuit(), true
 	case "ctrl+b":
 		d.showBanner = !d.showBanner
 		d.layoutPanels()
@@ -696,10 +808,8 @@ func (d *Dashboard) consumeTargetRequest() tea.Cmd {
 		cmds = append(cmds, d.captureAuthCmd(targetURL, username, password))
 	}
 	if d.target.SaveRunRequested {
-		path := d.target.PendingRunPath
 		d.target.SaveRunRequested = false
-		d.target.PendingRunPath = ""
-		cmds = append(cmds, d.saveRun(path))
+		cmds = append(cmds, d.saveRun())
 	}
 	if d.target.LoadRunRequested {
 		path := d.target.PendingRunPath
@@ -721,8 +831,12 @@ func (d *Dashboard) consumeDiscoveryRequest() tea.Cmd {
 }
 
 func (d *Dashboard) launchScan(cfg ScanConfig) tea.Cmd {
-	if strings.TrimSpace(cfg.Target) == "" {
+	cfg.Target = strings.TrimSpace(cfg.Target)
+	if cfg.Target == "" {
 		return messageCmd(ScanDoneMsg{Summary: "target is required", Error: fmt.Errorf("target is required")})
+	}
+	if _, _, err := net.ParseCIDR(cfg.Target); err != nil {
+		cfg.Target = core.EnsureProtocol(cfg.Target)
 	}
 	d.stopWork()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -746,6 +860,14 @@ func (d *Dashboard) runScanCmd(ctx context.Context, cfg ScanConfig) tea.Cmd {
 	send := d.send
 	archiveDir := strings.TrimSpace(services.ArchiveDir)
 	return func() tea.Msg {
+		defer func() {
+			if r := recover(); r != nil {
+				send(ScanDoneMsg{
+					Summary: "scan error (panic)",
+					Error:   fmt.Errorf("panic during scan execution: %v", r),
+				})
+			}
+		}()
 		if strings.TrimSpace(cfg.Proxy) != "" {
 			if err := proxy.ConfigureProxy(cfg.Proxy, ""); err != nil {
 				return ScanDoneMsg{
@@ -753,13 +875,52 @@ func (d *Dashboard) runScanCmd(ctx context.Context, cfg ScanConfig) tea.Cmd {
 					Error:   fmt.Errorf("proxy configuration failed: %w", err),
 				}
 			}
+			if err := proxy.CheckActiveProxyConnectivity(2); err != nil {
+				return ScanDoneMsg{
+					Summary: "proxy connection failed",
+					Error:   fmt.Errorf("cannot connect to proxy %s — ensure your HTTP proxy (e.g. Burp Suite/ZAP) is listening or clear the Proxy field", cfg.Proxy),
+				}
+			}
+		} else {
+			proxy.DisableProxy()
 		}
 		if len(cfg.AuthCookies) > 0 {
 			core.SetDefaultCookies(cfg.AuthCookies)
 		}
 
+		if services.MCPContext != nil && strings.TrimSpace(cfg.Target) != "" {
+			ctxBg := context.Background()
+			domain := domainFromTarget(cfg.Target)
+			_ = services.MCPContext.SetTarget(ctxBg, engagement.TargetProfile{
+				Name:    cfg.Target,
+				BaseURL: cfg.Target,
+				Domain:  domain,
+				Hosts:   nonEmptyList(domain),
+			})
+		}
+
+		runCtx, runErr := dashboardRunContext(cfg, services.ExecutionPolicy)
+		if runErr != nil {
+			return ScanDoneMsg{Summary: "run setup failed", Error: runErr}
+		}
+		if _, runErr = services.Execution.Start(runCtx, "tui_"+normalizeDashboardIntent(cfg.Intent)); runErr != nil {
+			return ScanDoneMsg{Summary: "run setup failed", Error: runErr}
+		}
+		send(RunStateMsg{Run: &execution.Run{Context: runCtx, ToolName: "tui_" + normalizeDashboardIntent(cfg.Intent), Status: execution.RunRunning, StartedAt: runCtx.StartedAt}})
+		ctx = execution.WithRunContext(ctx, runCtx)
+
 		emitter := newScanEmitter(send)
 		result, err := runDashboardIntentScan(ctx, services, cfg, emitter)
+		status := execution.RunCompleted
+		if errors.Is(ctx.Err(), context.Canceled) {
+			status = execution.RunCancelled
+		} else if err != nil || (result != nil && len(result.Errors) > 0) {
+			status = execution.RunPartial
+		}
+		_ = services.Execution.Finish(runCtx.ID, status, "dashboard scan "+string(status), err)
+		if snapshot, ok := services.Execution.Get(runCtx.ID); ok {
+			send(RunStateMsg{Run: snapshot})
+		}
 
 		cancelled := errors.Is(ctx.Err(), context.Canceled)
 		if result == nil {
@@ -779,7 +940,24 @@ func (d *Dashboard) runScanCmd(ctx context.Context, cfg ScanConfig) tea.Cmd {
 				done.ArchivePath = path
 			}
 		}
+		syncScanResultToMCP(services, cfg, result)
 		return done
+	}
+}
+
+func syncScanResultToMCP(services DashboardServices, cfg ScanConfig, result *surface.FullSurfaceResult) {
+	if services.MCPContext != nil && strings.TrimSpace(cfg.Target) != "" {
+		ctx := context.Background()
+		domain := domainFromTarget(cfg.Target)
+		_ = services.MCPContext.SetTarget(ctx, engagement.TargetProfile{
+			Name:    cfg.Target,
+			BaseURL: cfg.Target,
+			Domain:  domain,
+			Hosts:   nonEmptyList(domain),
+		})
+	}
+	if services.Assistant != nil && result != nil {
+		services.Assistant.RecordScanResult(cfg.Target, cfg.Intent, result)
 	}
 }
 
@@ -787,10 +965,17 @@ type scanEmitter struct {
 	mu     sync.Mutex
 	send   func(tea.Msg)
 	latest ScanProgressMsg
+	result *surface.FullSurfaceResult
 }
 
 func newScanEmitter(send func(tea.Msg)) *scanEmitter {
 	return &scanEmitter{send: send}
+}
+
+func (e *scanEmitter) setResult(res *surface.FullSurfaceResult) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.result = res
 }
 
 func (e *scanEmitter) progress(stage string) {
@@ -804,6 +989,12 @@ func (e *scanEmitter) progress(stage string) {
 func (e *scanEmitter) port(port core.PortResult) {
 	e.mu.Lock()
 	e.latest.Ports++
+	if e.result != nil {
+		if e.result.PortScan == nil {
+			e.result.PortScan = &core.ScanResult{Hostname: e.result.Target}
+		}
+		e.result.PortScan.OpenPorts = append(e.result.PortScan.OpenPorts, port)
+	}
 	phase := e.latest.Phase
 	msg := e.latest
 	e.mu.Unlock()
@@ -814,6 +1005,9 @@ func (e *scanEmitter) port(port core.PortResult) {
 func (e *scanEmitter) crawl(f core.CrawlFinding) {
 	e.mu.Lock()
 	e.latest.URLs++
+	if e.result != nil {
+		e.result.CrawlFindings = append(e.result.CrawlFindings, f)
+	}
 	phase := e.latest.Phase
 	msg := e.latest
 	e.mu.Unlock()
@@ -824,6 +1018,9 @@ func (e *scanEmitter) crawl(f core.CrawlFinding) {
 func (e *scanEmitter) finding(f core.VulnFinding) {
 	e.mu.Lock()
 	e.latest.Findings++
+	if e.result != nil {
+		e.result.VulnFindings = append(e.result.VulnFindings, f)
+	}
 	msg := e.latest
 	e.mu.Unlock()
 	e.emit(discoveryItemForFinding(f))
@@ -833,6 +1030,15 @@ func (e *scanEmitter) finding(f core.VulnFinding) {
 func (e *scanEmitter) param(name string, detail core.ParamDetail) {
 	e.mu.Lock()
 	e.latest.Params++
+	if e.result != nil {
+		if e.result.Params == nil {
+			e.result.Params = &core.ParamDiscoveryResult{Params: make(map[string]core.ParamDetail)}
+		}
+		if e.result.Params.Params == nil {
+			e.result.Params.Params = make(map[string]core.ParamDetail)
+		}
+		e.result.Params.Params[name] = detail
+	}
 	phase := e.latest.Phase
 	msg := e.latest
 	e.mu.Unlock()
@@ -844,6 +1050,9 @@ func (e *scanEmitter) apiParameter(param core.APIParameterFinding) {
 	key, item := formatAPIParameter(param)
 	e.mu.Lock()
 	e.latest.Params++
+	if e.result != nil {
+		e.result.APIParameters = append(e.result.APIParameters, param)
+	}
 	phase := e.latest.Phase
 	msg := e.latest
 	e.mu.Unlock()
@@ -859,6 +1068,9 @@ func (e *scanEmitter) js(pageURL string, js *core.JSAnalysisResult) {
 	e.latest.JSFiles += len(js.ScriptURLs)
 	e.latest.Secrets += len(js.Secrets)
 	e.latest.Params += len(js.HiddenParams)
+	if e.result != nil {
+		e.result.Secrets = append(e.result.Secrets, js.Secrets...)
+	}
 	phase := e.latest.Phase
 	msg := e.latest
 	e.mu.Unlock()
@@ -866,7 +1078,7 @@ func (e *scanEmitter) js(pageURL string, js *core.JSAnalysisResult) {
 		e.emit(DiscoveryItemMsg{Section: "JS Files", Key: scriptURL, Item: scriptURL, Phase: phase})
 	}
 	for _, secret := range js.Secrets {
-		e.emit(DiscoveryItemMsg{Section: "Secrets", Key: secret.Value + secret.SourceURL, Item: formatSecretFinding(secret), Phase: phase})
+		e.emit(DiscoveryItemMsg{Section: "Secrets", Key: secret.Value + secret.SourceURL, Item: formatSecretFinding(secret, false), Detail: formatSecretFinding(secret, true), Phase: phase})
 	}
 	for _, param := range js.HiddenParams {
 		e.emit(DiscoveryItemMsg{Section: "Params", Key: param, Item: fmt.Sprintf("?%s= (js)", param), Phase: phase})
@@ -880,6 +1092,9 @@ func (e *scanEmitter) api(api *core.APISurfaceResult) {
 	}
 	e.mu.Lock()
 	e.latest.Endpoints += len(api.APIEndpoints) + len(api.APISpecs)
+	if e.result != nil {
+		e.result.APIEndpoints = append(e.result.APIEndpoints, api.APIEndpoints...)
+	}
 	phase := e.latest.Phase
 	msg := e.latest
 	e.mu.Unlock()
@@ -897,6 +1112,9 @@ func (e *scanEmitter) api(api *core.APISurfaceResult) {
 func (e *scanEmitter) subdomain(sub core.SubdomainResult) {
 	e.mu.Lock()
 	e.latest.Subdomains++
+	if e.result != nil {
+		e.result.Subdomains = append(e.result.Subdomains, sub)
+	}
 	phase := e.latest.Phase
 	msg := e.latest
 	e.mu.Unlock()
@@ -938,6 +1156,9 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			"depth":      cfg.Depth,
 		},
 	}
+	if emitter != nil {
+		emitter.setResult(result)
+	}
 	defer func() {
 		result.EndTime = time.Now()
 		result.Counts = surfaceResultCounts(result)
@@ -951,14 +1172,16 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			return nil
 		}
 	}
+	var resultMu sync.Mutex
 	addErr := func(stage string, err error) {
 		if err != nil {
+			resultMu.Lock()
 			result.Errors = append(result.Errors, surface.StageError{Stage: stage, Error: err.Error()})
+			resultMu.Unlock()
 			// Surface the error in real-time via the phase display
 			emitter.progress(fmt.Sprintf("%s error: %s", stage, err.Error()))
 		}
 	}
-
 	runPortScan := func(stage string, ports []int) error {
 		if services.Scanner == nil {
 			return nil
@@ -976,7 +1199,9 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			SuppressOutput: true,
 		})
 		if scan != nil {
+			resultMu.Lock()
 			result.PortScan = scan
+			resultMu.Unlock()
 			for _, port := range scan.OpenPorts {
 				emitter.port(port)
 			}
@@ -1020,7 +1245,9 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 				emitFinding(finding)
 			}
 		}
+		resultMu.Lock()
 		result.CrawlFindings = append(result.CrawlFindings, findings...)
+		resultMu.Unlock()
 		urls := make([]string, 0, len(findings))
 		for _, finding := range findings {
 			if finding.URL != "" {
@@ -1043,7 +1270,9 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			Fingerprint:  true,
 			Prioritize:   true,
 		})
+		resultMu.Lock()
 		result.VulnFindings = append(result.VulnFindings, findings...)
+		resultMu.Unlock()
 		for _, finding := range findings {
 			emitter.finding(finding)
 		}
@@ -1063,6 +1292,9 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 		}
 		detail := result.Params.Params[name]
 		detail.Name = name
+		if detail.Method == "" {
+			detail.Method = "js_hidden"
+		}
 		detail.Sources = uniqueOrderedStrings(append(detail.Sources, source))
 		result.Params.Params[name] = detail
 		result.Params.TotalCount = len(result.Params.Params)
@@ -1080,6 +1312,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			if err != nil {
 				addErr(stage, err)
 			} else if jsResult != nil {
+				resultMu.Lock()
 				result.JSAnalysis = append(result.JSAnalysis, surface.JSPageAnalysis{
 					PageURL: pageURL,
 					Result:  *jsResult,
@@ -1088,6 +1321,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 				for _, param := range jsResult.HiddenParams {
 					addHiddenParam(param, pageURL)
 				}
+				resultMu.Unlock()
 				emitter.js(pageURL, jsResult)
 			}
 			if err := checkCtx(); err != nil {
@@ -1111,6 +1345,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			Timeout:        firstPositiveInt(cfg.Timeout, 10),
 		})
 		if hunt != nil {
+			resultMu.Lock()
 			result.APIEndpoints = append(result.APIEndpoints, hunt.APIEndpoints...)
 			result.APISpecs = append(result.APISpecs, hunt.APISpecs...)
 			result.APIParameters = append(result.APIParameters, hunt.Parameters...)
@@ -1119,6 +1354,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 					result.Errors = append(result.Errors, surface.StageError{Stage: stage, Error: stageErr})
 				}
 			}
+			resultMu.Unlock()
 			emitter.api(&core.APISurfaceResult{APIEndpoints: hunt.APIEndpoints, APISpecs: hunt.APISpecs})
 			for _, param := range hunt.Parameters {
 				emitter.apiParameter(param)
@@ -1142,7 +1378,9 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			UseCrtSh:   true,
 			CheckAlive: true,
 		})
+		resultMu.Lock()
 		result.Subdomains = append(result.Subdomains, subdomains...)
+		resultMu.Unlock()
 		for _, subdomain := range subdomains {
 			emitter.subdomain(subdomain)
 		}
@@ -1158,7 +1396,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 		g, gctx := errgroup.WithContext(ctx)
 
 		g.Go(func() error {
-			return runPortScan("Port scanning", parsePorts(cfg.PortRange))
+			return runPortScan("Port scanning", parsePorts(cfg.PortRange, cfg.Target))
 		})
 		g.Go(func() error {
 			return runSubdomains("Enumerating subdomains")
@@ -1191,6 +1429,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			if err != nil {
 				addErr("Crawl+Mine", err)
 			}
+			resultMu.Lock()
 			if findings != nil {
 				result.CrawlFindings = append(result.CrawlFindings, findings...)
 			}
@@ -1200,6 +1439,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 					emitter.param(name, params.Params[name])
 				}
 			}
+			resultMu.Unlock()
 			return nil
 		})
 
@@ -1207,19 +1447,21 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 			return result, err
 		}
 
-		// ── Level 2: depends on crawled URLs ──────────────────
+		// ── Level 2: depends on crawled URLs (run in parallel) ──
 		jsTargets := uniqueOrderedStrings(append([]string{cfg.Target}, crawledURLs...))
-		if err := runJSAnalysis("Analyzing JavaScript", jsTargets); err != nil {
-			return result, err
-		}
-		if err := runAPI("Discovering API surface", crawledURLs); err != nil {
-			return result, err
-		}
+		g2, _ := errgroup.WithContext(ctx)
+		g2.Go(func() error {
+			return runJSAnalysis("Analyzing JavaScript", jsTargets)
+		})
+		g2.Go(func() error {
+			return runAPI("Discovering API surface", crawledURLs)
+		})
+		_ = g2.Wait()
 
 	case "quick_recon":
 		g, _ := errgroup.WithContext(ctx)
 		g.Go(func() error {
-			return runPortScan("Port scanning", parsePorts(cfg.PortRange))
+			return runPortScan("Port scanning", parsePorts(cfg.PortRange, cfg.Target))
 		})
 		g.Go(func() error {
 			_, err := runCrawl(min(core.NormalizeCrawlDepth(cfg.Depth), 2))
@@ -1303,7 +1545,7 @@ func runDashboardIntentScan(ctx context.Context, services DashboardServices, cfg
 	default:
 		g, _ := errgroup.WithContext(ctx)
 		g.Go(func() error {
-			return runPortScan("Port scanning", parsePorts(cfg.PortRange))
+			return runPortScan("Port scanning", parsePorts(cfg.PortRange, cfg.Target))
 		})
 		g.Go(func() error {
 			_, err := runCrawl(cfg.Depth)
@@ -1827,27 +2069,51 @@ func (d *Dashboard) discoveryKeysBySection() map[string]map[string]struct{} {
 	return out
 }
 
-func (d *Dashboard) saveRun(path string) tea.Cmd {
+// saveRun writes the active archive without prompting for a destination. If
+// the run was loaded from or previously saved to a file, that file is updated;
+// otherwise the project archive directory receives <target>/<target>.akemi.
+func (d *Dashboard) saveRun() tea.Cmd {
 	target := ""
 	if d.target != nil {
 		target = d.target.buildArchiveConfig().Target
 	}
 	archive := d.archiveForCurrentRun()
-	return func() tea.Msg {
-		resolved, err := resolveManualSavePath(path, target)
+	if archive == nil {
+		return func() tea.Msg { return RunSavedMsg{Error: "nothing to save yet"} }
+	}
+	d.currentArchive = archive
+
+	path := strings.TrimSpace(d.currentArchivePath)
+	if path == "" {
+		defaultRoot := strings.TrimSpace(d.services.ArchiveDir)
+		if defaultRoot == "" || filepath.Clean(defaultRoot) == "." {
+			defaultRoot = filepath.Join(config.WorkemiDirectory(), "Projects")
+		}
+		resolved, err := resolveManualSavePathInRoot("", target, defaultRoot)
 		if err != nil {
+			return func() tea.Msg { return RunSavedMsg{Error: err.Error()} }
+		}
+		path = resolved
+	} else {
+		path = normalizeArchivePath(path)
+	}
+
+	return func() tea.Msg {
+		if err := akemiarchive.WriteFile(path, archive); err != nil {
 			return RunSavedMsg{Error: err.Error()}
 		}
-		if archive == nil {
-			return RunSavedMsg{Error: "nothing to save yet"}
-		}
-		if err := akemiarchive.WriteFile(resolved, archive); err != nil {
-			return RunSavedMsg{Error: err.Error()}
-		}
-		return RunSavedMsg{Path: resolved}
+		return RunSavedMsg{Path: path}
 	}
 }
 
+// saveAndQuit attempts to preserve the live dashboard state before exiting.
+func (d *Dashboard) saveAndQuit() tea.Cmd {
+	save := d.saveRun()
+	return func() tea.Msg {
+		result, _ := save().(RunSavedMsg)
+		return autoSaveQuitMsg{Path: result.Path, Error: result.Error}
+	}
+}
 func (d *Dashboard) loadRun(path string) tea.Cmd {
 	return func() tea.Msg {
 		archivePath := strings.TrimSpace(path)
@@ -1958,7 +2224,7 @@ func (d *Dashboard) applyArchiveResultsToDiscovery(results akemiarchive.Results)
 			d.discovery.AddItemWithKey("JS Files", script, script)
 		}
 		for _, secret := range js.Result.Secrets {
-			d.discovery.AddItemWithKey("Secrets", secret.Value+secret.SourceURL, formatSecretFinding(secret))
+			d.discovery.AddItemWithKeyAndDetail("Secrets", secret.Value+secret.SourceURL, formatSecretFinding(secret, false), formatSecretFinding(secret, true))
 		}
 	}
 	for _, ep := range results.APIEndpoints {
@@ -2047,7 +2313,16 @@ func (d *Dashboard) send(msg tea.Msg) {
 	select {
 	case d.events <- msg:
 	default:
-		go func() { d.events <- msg }()
+		// Keep the queue bounded. Prefer the newest state update over
+		// spawning a goroutine that can outlive the dashboard.
+		select {
+		case <-d.events:
+		default:
+		}
+		select {
+		case d.events <- msg:
+		default:
+		}
 	}
 }
 
@@ -2135,6 +2410,9 @@ func (d *Dashboard) panelGapWidth(leftW int) int {
 
 // View implements tea.Model.
 func (d *Dashboard) View() string {
+	if d.firstRunSetup != nil && d.firstRunSetup.visible {
+		return d.firstRunSetup.View(d.width, d.height)
+	}
 	if d.apiSettings != nil && d.apiSettings.visible {
 		return d.apiSettings.view(d.width, d.height)
 	}
@@ -2256,7 +2534,7 @@ func (d *Dashboard) renderBanner() string {
 		DimText.Render("|"),
 		tab(agentLabel, chatActive || historyActive),
 		DimText.Render("|"),
-		HelpText.Render(" Tab focus | Drag borders resize | Ctrl+Y copy | Ctrl+M mouse/select | Ctrl+D discovery | Ctrl+A activity | Ctrl+P chat | F5 settings | Ctrl+X stop | Ctrl+C quit "),
+		HelpText.Render(" Tab focus | Drag borders resize | Ctrl+Y copy | Ctrl+M mouse/select | Ctrl+D discovery | Ctrl+A activity | Ctrl+P chat | F5 settings | Ctrl+X stop | Ctrl+C save & quit "),
 	}
 	line := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 	if d.width > 0 && lipgloss.Width(line) > d.width {
@@ -2418,8 +2696,8 @@ func nonEmptyList(values ...string) []string {
 	return out
 }
 
-func parsePorts(value string) []int {
-	return surface.ParseDashboardPorts(value)
+func parsePorts(value, target string) []int {
+	return surface.ParseDashboardPortsWithTarget(value, target)
 }
 
 func domainFromTarget(target string) string {
@@ -2655,7 +2933,7 @@ func archiveSectionsFromResults(results akemiarchive.Results) []akemiarchive.Dis
 			add("JS Files", script, script)
 		}
 		for _, secret := range js.Result.Secrets {
-			add("Secrets", secret.Value+secret.SourceURL, formatSecretFinding(secret))
+			add("Secrets", secret.Value+secret.SourceURL, formatSecretFinding(secret, false))
 		}
 	}
 	for _, ep := range results.APIEndpoints {
@@ -2689,28 +2967,65 @@ func archiveSectionsFromResults(results akemiarchive.Results) []akemiarchive.Dis
 
 func writeArchiveToDir(dir, target string, archive *akemiarchive.File) (string, error) {
 	if strings.TrimSpace(dir) == "" {
-		return "", nil
+		dir = filepath.Join(config.WorkemiDirectory(), "Projects")
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	cleanTarget := sanitizeTargetForDir(target)
+	projDir := filepath.Join(dir, cleanTarget)
+	if err := os.MkdirAll(projDir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, akemiarchive.DefaultFilename(target, time.Now()))
+	path := filepath.Join(projDir, fmt.Sprintf("%s.akemi", cleanTarget))
 	if err := akemiarchive.WriteFile(path, archive); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-func resolveManualSavePath(path, target string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		path = filepath.Join(home, akemiarchive.DefaultRunFilename(target))
+func sanitizeTargetForDir(target string) string {
+	target = strings.TrimSpace(target)
+	if u, err := url.Parse(target); err == nil && u.Host != "" {
+		target = u.Host
+	} else {
+		target = strings.TrimPrefix(target, "https://")
+		target = strings.TrimPrefix(target, "http://")
 	}
+	if idx := strings.Index(target, "/"); idx != -1 {
+		target = target[:idx]
+	}
+	if idx := strings.Index(target, ":"); idx != -1 {
+		target = target[:idx]
+	}
+	target = strings.ReplaceAll(target, " ", "_")
+	if target == "" {
+		target = "project"
+	}
+	return target
+}
+
+func resolveManualSavePath(path, target string) (string, error) {
+	return resolveManualSavePathInRoot(path, target, filepath.Join(config.WorkemiDirectory(), "Projects"))
+}
+
+func resolveManualSavePathInRoot(path, target, defaultRoot string) (string, error) {
+	path = strings.TrimSpace(path)
+	cleanTarget := sanitizeTargetForDir(target)
+	if path == "" {
+		if strings.TrimSpace(defaultRoot) == "" {
+			defaultRoot = filepath.Join(config.WorkemiDirectory(), "Projects")
+		}
+		return filepath.Clean(filepath.Join(defaultRoot, cleanTarget, cleanTarget+".akemi")), nil
+	}
+
 	path = expandHomePath(path)
+	isDirectory := strings.HasSuffix(path, string(os.PathSeparator)) || strings.HasSuffix(path, "/") || strings.HasSuffix(path, "\\")
+	if info, err := os.Stat(path); err == nil {
+		isDirectory = info.IsDir()
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect save path: %w", err)
+	}
+	if isDirectory {
+		return filepath.Clean(filepath.Join(path, cleanTarget, cleanTarget+".akemi")), nil
+	}
 	if strings.TrimSpace(filepath.Ext(path)) == "" {
 		path += ".akemi"
 	}
@@ -2833,42 +3148,61 @@ func formatAPISpec(spec core.APISpecFinding) (string, string) {
 
 func formatAPIParameter(param core.APIParameterFinding) (string, string) {
 	key := firstNonEmpty(param.Name, strings.Join(param.Endpoints, ","))
-	parts := []string{fmt.Sprintf("?%s=", firstNonEmpty(param.Name, "parameter"))}
+	name := firstNonEmpty(param.Name, "parameter")
+	parts := []string{fmt.Sprintf("?%s=", name)}
 	if param.In != "" {
-		parts = append(parts, param.In)
+		parts = append(parts, fmt.Sprintf("[%s]", param.In))
 	}
 	if param.Type != "" {
-		parts = append(parts, param.Type)
+		parts = append(parts, fmt.Sprintf("(%s)", param.Type))
 	}
 	if param.Required {
-		parts = append(parts, "required")
-	}
-	if len(param.Endpoints) > 0 {
-		parts = append(parts, fmt.Sprintf("(%d endpoints)", len(param.Endpoints)))
+		parts = append(parts, "[req]")
 	}
 	if len(param.Sources) > 0 {
-		parts = append(parts, fmt.Sprintf("(%d sources)", len(param.Sources)))
+		src := param.Sources[0]
+		if len(param.Sources) > 1 {
+			src = fmt.Sprintf("%s (+%d)", src, len(param.Sources)-1)
+		}
+		parts = append(parts, fmt.Sprintf("src: %s", src))
+	} else if len(param.Endpoints) > 0 {
+		ep := param.Endpoints[0]
+		if len(param.Endpoints) > 1 {
+			ep = fmt.Sprintf("%s (+%d)", ep, len(param.Endpoints)-1)
+		}
+		parts = append(parts, fmt.Sprintf("ep: %s", ep))
 	}
 	return key, strings.Join(parts, " ")
 }
 
 func formatParamDetail(name string, detail core.ParamDetail) string {
-	parts := []string{fmt.Sprintf("?%s=", firstNonEmpty(name, detail.Name, "param"))}
+	paramName := firstNonEmpty(name, detail.Name, "param")
+	parts := []string{fmt.Sprintf("?%s=", paramName)}
+	if detail.Method != "" {
+		parts = append(parts, fmt.Sprintf("[%s]", detail.Method))
+	}
 	if len(detail.Sources) > 0 {
-		parts = append(parts, fmt.Sprintf("(%d sources)", len(detail.Sources)))
+		src := detail.Sources[0]
+		if len(detail.Sources) > 1 {
+			src = fmt.Sprintf("%s (+%d)", src, len(detail.Sources)-1)
+		}
+		parts = append(parts, fmt.Sprintf("src: %s", src))
 	}
 	if len(detail.Examples) > 0 {
-		parts = append(parts, "ex: "+truncate(detail.Examples[0], 60))
+		parts = append(parts, "ex: "+truncate(detail.Examples[0], 40))
 	}
 	return strings.Join(parts, " ")
 }
 
-func formatSecretFinding(secret core.SecretFinding) string {
+func formatSecretFinding(secret core.SecretFinding, reveal bool) string {
 	category := firstNonEmpty(secret.Category, "secret")
 	source := firstNonEmpty(secret.SourceURL, secret.SourceKind)
 	value := "<redacted>"
 	if secret.Value != "" {
-		value = truncate(secret.Value, 12) + "..."
+		value = secret.Value
+		if !reveal {
+			value = truncate(secret.Value, 12) + "..."
+		}
 	}
 	if source == "" {
 		return fmt.Sprintf("[%s] %s", category, value)

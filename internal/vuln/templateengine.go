@@ -2,6 +2,7 @@ package vuln
 
 import (
 	core "Akemi/internal/core"
+	"Akemi/internal/execution"
 	"fmt"
 	"log"
 	"net/http"
@@ -213,7 +214,7 @@ func ExecuteAllTemplates(
 	queryParams := parsed.Query()
 	paramNames := mergeParamNames(queryParams, candidateParams)
 	baseURL := fmt.Sprintf("%s://%s%s", parsed.Scheme, parsed.Host, parsed.Path)
-	client := core.CreateHTTPClient(cfg.Timeout)
+	client := execution.WrapHTTPClient(cfg.Context, core.CreateHTTPClient(cfg.Timeout))
 
 	// ── Adaptive prioritization ───────────────────────────
 	if cfg.Prioritize && targetCtx != nil && len(templates) > 1 {

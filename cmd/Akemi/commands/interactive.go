@@ -32,7 +32,7 @@ Navigation:
   Ctrl+M            Toggle mouse mode for native terminal selection
   F5 / Ctrl+O       Open DeepSeek/OpenAI API settings
   Ctrl+B            Toggle bottom status bar
-  Ctrl+C            Quit`,
+  Ctrl+C            Save current work and quit`,
 		RunE: runInteractive,
 	}
 
@@ -60,7 +60,13 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
+	initialArchivePath := importPath
+	if initialArchive == nil {
+		initialArchive, initialArchivePath, err = loadProjectInitialArchive(svc.Project)
+		if err != nil {
+			return err
+		}
+	}
 	fmt.Println("Launching Akemi Terminal Interface...")
 
 	// Print project context if loaded.
@@ -73,7 +79,9 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 		dashSvc.Project = svc.Project
 	}
 	dashSvc.InitialArchive = initialArchive
+	dashSvc.InitialArchivePath = initialArchivePath
 	dashSvc.MCPContext = svc.MCPContext
+	dashSvc.Execution = svc.Execution
 	dashSvc.AssistantLoad = buildDashboardAssistantLoad(svc, core.Logger())
 	dashSvc.AssistantSetup = buildDashboardAssistantSetup(svc, core.Logger())
 	dashSvc.APISettingsLoad = buildDashboardAPISettingsLoad()

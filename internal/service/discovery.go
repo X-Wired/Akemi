@@ -9,6 +9,7 @@ import (
 	"time"
 
 	core "Akemi/internal/core"
+	"Akemi/internal/execution"
 	recon "Akemi/internal/recon"
 )
 
@@ -65,7 +66,7 @@ func (s *DiscoveryService) CrawlAndMine(ctx context.Context, startURL string, ma
 	}
 
 	urlCh := make(chan string, 200)
-	client := core.CreateHTTPClient(reconCfg.Timeout)
+	client := execution.WrapHTTPClient(ctx, core.CreateHTTPClient(reconCfg.Timeout))
 
 	var mu sync.Mutex
 	aggregated := make(map[string]core.ParamDetail)
@@ -87,13 +88,29 @@ func (s *DiscoveryService) CrawlAndMine(ctx context.Context, startURL string, ma
 				}
 				mu.Lock()
 				for name, detail := range analysis.ParamDetails {
+					methodStr := ""
+					if len(detail.SourceTypes) > 0 {
+						var st []string
+						for _, s := range detail.SourceTypes {
+							st = append(st, string(s))
+						}
+						methodStr = strings.Join(st, ",")
+					}
 					if existing, ok := aggregated[name]; ok {
 						existing.Sources = append(existing.Sources, detail.Sources...)
 						existing.Examples = append(existing.Examples, detail.Values...)
+						if methodStr != "" && !strings.Contains(existing.Method, methodStr) {
+							if existing.Method == "" {
+								existing.Method = methodStr
+							} else {
+								existing.Method = existing.Method + "," + methodStr
+							}
+						}
 						aggregated[name] = existing
 					} else {
 						aggregated[name] = core.ParamDetail{
 							Name:     name,
+							Method:   methodStr,
 							Sources:  detail.Sources,
 							Examples: detail.Values,
 						}
@@ -206,8 +223,17 @@ func (s *DiscoveryService) MineParams(ctx context.Context, targetURL string, cfg
 	// Convert param details
 	params := make(map[string]core.ParamDetail, len(result.Params))
 	for name, detail := range result.Params {
+		methodStr := ""
+		if len(detail.SourceTypes) > 0 {
+			var st []string
+			for _, s := range detail.SourceTypes {
+				st = append(st, string(s))
+			}
+			methodStr = strings.Join(st, ",")
+		}
 		params[name] = core.ParamDetail{
 			Name:     name,
+			Method:   methodStr,
 			Sources:  detail.Sources,
 			Examples: detail.Values,
 		}
@@ -324,7 +350,7 @@ func (s *DiscoveryService) DiscoverAPISurface(ctx context.Context, startURL stri
 	default:
 	}
 
-	client := core.CreateHTTPClient(10)
+	client := execution.WrapHTTPClient(ctx, core.CreateHTTPClient(10))
 	endpoints, specs, err := recon.DiscoverAPISurface(startURL, discoveredURLs, nil, client)
 	if err != nil {
 		return nil, core.NewError("Discoverer.DiscoverAPISurface", startURL, err)
@@ -354,7 +380,7 @@ func (s *DiscoveryService) HuntAPISurface(ctx context.Context, req core.APIHuntR
 	default:
 	}
 
-	client := core.CreateHTTPClientWithCookies(firstPositive(req.Timeout, 10), req.AuthCookies)
+	client := execution.WrapHTTPClient(ctx, core.CreateHTTPClientWithCookies(firstPositive(req.Timeout, 10), req.AuthCookies))
 	result, err := recon.HuntAPISurface(recon.APIHuntRequest{
 		StartURL:       req.StartURL,
 		DiscoveredURLs: req.DiscoveredURLs,

@@ -295,6 +295,10 @@ func (t *StreamableHTTPTransport) handleMCPPost(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	req.Context = r.Context()
+
+	req.Context = r.Context()
+
 	t.logger.Info("MCP HTTP request",
 		slog.String("method", req.Method),
 		slog.Any("id", req.ID),
@@ -311,17 +315,8 @@ func (t *StreamableHTTPTransport) handleMCPPost(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	key := rpcIDKey(req.ID)
-	ch := make(chan interface{}, 1)
-	t.pendingMu.Lock()
-	t.pending[key] = ch
-	t.pendingMu.Unlock()
-	defer func() {
-		t.pendingMu.Lock()
-		delete(t.pending, key)
-		t.pendingMu.Unlock()
-	}()
-
+	reply := make(chan interface{}, 1)
+	req.Reply = reply
 	select {
 	case t.incoming <- &req:
 	case <-r.Context().Done():
@@ -332,7 +327,7 @@ func (t *StreamableHTTPTransport) handleMCPPost(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), defaultHTTPRequestTimeout)
 	defer cancel()
 	select {
-	case msg := <-ch:
+	case msg := <-reply:
 		data, err := json.Marshal(msg)
 		if err != nil {
 			t.writeHTTPError(w, http.StatusInternalServerError, "failed to marshal JSON-RPC response")

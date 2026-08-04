@@ -196,6 +196,13 @@ func EnumerateSubdomains(domain string, cfg SubdomainConfig) ([]SubdomainResult,
 	domain = strings.TrimPrefix(domain, "https://")
 	domain = strings.TrimPrefix(domain, "http://")
 	domain = strings.Split(domain, "/")[0]
+	if i := strings.Index(domain, ":"); i >= 0 {
+		domain = domain[:i]
+	}
+
+	if domain == "" || net.ParseIP(domain) != nil || net.ParseIP(strings.Trim(domain, "[]")) != nil {
+		return []SubdomainResult{}, nil
+	}
 
 	if cfg.Threads == 0 {
 		cfg.Threads = 20

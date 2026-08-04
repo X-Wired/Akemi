@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -137,8 +138,30 @@ type FullScanRequest struct {
 	VulnCheck  bool   `json:"vuln_check"`
 }
 
-// EnsureProtocol is a shared helper
+// CleanInput removes non-printable ASCII control characters (including null bytes \x00) and trims whitespace.
+func CleanInput(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var sb strings.Builder
+	for _, r := range s {
+		if r >= 32 && r != 127 {
+			sb.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// EnsureProtocol is a shared helper. If the input is a CIDR block, it is returned as-is.
 func EnsureProtocol(url string) string {
+	url = CleanInput(url)
+	if url == "" {
+		return ""
+	}
+	if _, _, err := net.ParseCIDR(url); err == nil {
+		return url
+	}
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return "http://" + url
 	}

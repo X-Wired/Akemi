@@ -4,6 +4,7 @@ package engagement
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -62,8 +63,48 @@ func (m *Manager) RequiresApproval(req Request) bool {
 	case ApprovalDeny:
 		return true
 	default:
-		return !m.sessionGrants[req.ToolName]
+		if m.sessionGrants[req.ToolName] {
+			return false
+		}
+		return isAggressiveOrInvasive(req.ToolName, req.Risk)
 	}
+}
+
+func isAggressiveOrInvasive(toolName, risk string) bool {
+	risk = strings.ToLower(strings.TrimSpace(risk))
+	toolName = strings.ToLower(strings.TrimSpace(toolName))
+
+	// Explicit safe/query/read-only tools that never require approval
+	switch toolName {
+	case "akemi_get_target", "akemi_configure_target", "akemi_configure_defaults",
+		"akemi_add_parameters", "akemi_list_parameters", "akemi_clear_context",
+		"akemi_list_templates", "akemi_read_report", "akemi_write_report",
+		"akemi_get_artifact", "akemi_search_findings", "akemi_get_finding",
+		"akemi_run_status", "akemi_cancel_run", "akemi_approve_action",
+		"akemi_deny_action", "akemi_summarize_run", "akemi_generate_report",
+		"akemi_generate_graph", "akemi_exploit_lookup", "akemi_check_headers",
+		"akemi_tech_fingerprint", "akemi_analyze_js", "akemi_discover_api",
+		"akemi_subdomain_enum", "akemi_dork":
+		return false
+	}
+
+	// Check risk classification if provided
+	switch risk {
+	case "intrusive", "invasive", "active", "high", "destructive", "aggressive":
+		return true
+	case "safe", "passive", "read_only", "low", "info", "utility", "reporting":
+		return false
+	}
+
+	// Active scanning/probing/fuzzing tools require approval
+	switch toolName {
+	case "akemi_probe_vulns", "akemi_auth_capture", "akemi_fuzz", "akemi_full_surface_map",
+		"akemi_full_surface_scan", "akemi_port_scan", "akemi_host_discover", "akemi_crawl",
+		"akemi_api_hunter", "akemi_scrape_page", "akemi_start_run":
+		return true
+	}
+
+	return true
 }
 
 // GrantForSession lets future calls to a namespaced tool run without prompting.

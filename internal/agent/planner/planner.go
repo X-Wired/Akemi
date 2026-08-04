@@ -316,7 +316,7 @@ func (p *Planner) decomposeByCapabilities(goal Goal) (*Plan, error) {
 // =============================================================================
 
 func generateID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()%1000000)
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
 
 func taskFromTool(toolDef *tool.AgentTool, args map[string]interface{}, priority int) *TaskNode {

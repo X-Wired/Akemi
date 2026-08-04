@@ -74,7 +74,7 @@ func TestBuildGraphMasksSecretsAndIncludesAPISurfaceNodes(t *testing.T) {
 	}
 }
 
-func TestWriteHTMLIncludesFullSecretAndAPISurface(t *testing.T) {
+func TestWriteHTMLRedactsSecretAndIncludesAPISurface(t *testing.T) {
 	secretValue := "supersecretABCDEFGH1234"
 	report := &ScanReport{
 		Target: "https://example.com",
@@ -124,7 +124,7 @@ func TestWriteHTMLIncludesFullSecretAndAPISurface(t *testing.T) {
 
 	html := buf.String()
 	for _, expected := range []string{
-		secretValue,
+		maskSensitive(secretValue),
 		"API Surface",
 		"https://example.com/openapi.json",
 		"https://example.com/graphql",
@@ -136,6 +136,9 @@ func TestWriteHTMLIncludesFullSecretAndAPISurface(t *testing.T) {
 		if !strings.Contains(html, expected) {
 			t.Fatalf("expected HTML report to contain %q", expected)
 		}
+	}
+	if strings.Contains(html, secretValue) {
+		t.Fatalf("HTML report leaked the full secret")
 	}
 	if strings.Index(html, "https://example.com/") > strings.Index(html, "https://example.com/missing") {
 		t.Fatalf("expected 200 crawl rows to appear before 404 crawl rows in HTML: %s", html)

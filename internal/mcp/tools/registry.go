@@ -6,15 +6,18 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	core "Akemi/internal/core"
 	"Akemi/internal/dothound"
 	"Akemi/internal/engagement"
+	"Akemi/internal/execution"
 	"Akemi/internal/mcp"
 	mcpstate "Akemi/internal/mcp/state"
 	recon "Akemi/internal/recon"
+	surface "Akemi/internal/surface"
 	"Akemi/internal/toolbridge"
 )
 
@@ -36,31 +39,38 @@ type Services struct {
 	Reporter      core.Reporter
 	Context       engagement.ContextStore
 	ReportDir     string
+	WorkspaceDir  string
 	Logger        *slog.Logger
 	EventSink     toolbridge.Sink
 	State         *mcpstate.Store
 	Jobs          *JobManager
+	Execution     *execution.Manager
 }
 
 // ToolRegistry manages all registered MCP tools.
 type ToolRegistry struct {
-	tools    map[string]*RegisteredTool
-	services *Services
+	tools     map[string]*RegisteredTool
+	services  *Services
+	execution *execution.Manager
+	policy    execution.ExecutionPolicy
 }
 
 // ToolRegistryConfig holds the dependencies needed to create a ToolRegistry.
 type ToolRegistryConfig struct {
-	Scanner       core.Scanner
-	Discoverer    core.Discoverer
-	Prober        core.Prober
-	SubEnumerator core.SubEnumerator
-	Reporter      core.Reporter
-	Context       engagement.ContextStore
-	ReportDir     string
-	Logger        *slog.Logger
-	EventSink     toolbridge.Sink
-	State         *mcpstate.Store
-	Jobs          *JobManager
+	Scanner         core.Scanner
+	Discoverer      core.Discoverer
+	Prober          core.Prober
+	SubEnumerator   core.SubEnumerator
+	Reporter        core.Reporter
+	Context         engagement.ContextStore
+	ReportDir       string
+	WorkspaceDir    string
+	Logger          *slog.Logger
+	EventSink       toolbridge.Sink
+	State           *mcpstate.Store
+	Jobs            *JobManager
+	Execution       *execution.Manager
+	ExecutionPolicy execution.ExecutionPolicy
 }
 
 // NewToolRegistry creates a registry with all standard Akemi tools.
@@ -73,10 +83,12 @@ func NewToolRegistry(cfg ToolRegistryConfig) *ToolRegistry {
 		Reporter:      cfg.Reporter,
 		Context:       cfg.Context,
 		ReportDir:     cfg.ReportDir,
+		WorkspaceDir:  cfg.WorkspaceDir,
 		Logger:        cfg.Logger,
 		EventSink:     cfg.EventSink,
 		State:         cfg.State,
 		Jobs:          cfg.Jobs,
+		Execution:     cfg.Execution,
 	}
 	if svc.Context == nil {
 		svc.Context = engagement.NewMemoryContextStore()
@@ -86,18 +98,28 @@ func NewToolRegistry(cfg ToolRegistryConfig) *ToolRegistry {
 	} else {
 		svc.State.SetContextStore(svc.Context)
 	}
+	if svc.Execution == nil {
+		svc.Execution = execution.NewManager(100)
+	}
 	if svc.Jobs == nil {
 		svc.Jobs = NewJobManager(svc.State)
 	}
+	svc.Jobs.execution = svc.Execution
 	if svc.ReportDir == "" {
 		svc.ReportDir = "."
 	}
+	policy := cfg.ExecutionPolicy
+	if policy.MaxRisk == "" {
+		policy = execution.DefaultPolicy()
+	}
+	svc.Jobs.policy = policy
 
 	reg := &ToolRegistry{
-		tools:    make(map[string]*RegisteredTool),
-		services: svc,
+		tools:     make(map[string]*RegisteredTool),
+		services:  svc,
+		execution: svc.Execution,
+		policy:    policy,
 	}
-
 	reg.registerAll()
 	return reg
 }
@@ -110,12 +132,81 @@ func (r *ToolRegistry) SetEventSink(sink toolbridge.Sink) {
 	r.services.EventSink = sink
 }
 
+// RecordScanResult stores completed dashboard scan findings and job records in MCP state.
+func (r *ToolRegistry) RecordScanResult(target, intent string, rawResult interface{}) {
+	if r == nil || r.services == nil || r.services.State == nil {
+		return
+	}
+	target = strings.TrimSpace(target)
+	if r.services.Context != nil && target != "" {
+		domain := surface.DomainFromTarget(target)
+		var hosts []string
+		if domain != "" {
+			hosts = []string{domain}
+		}
+		_ = r.services.Context.SetTarget(context.Background(), engagement.TargetProfile{
+			Name:    target,
+			BaseURL: target,
+			Domain:  domain,
+			Hosts:   hosts,
+		})
+	}
+
+	result, ok := rawResult.(*surface.FullSurfaceResult)
+	if !ok || result == nil {
+		return
+	}
+
+	toolName := "akemi_full_surface_map"
+	if intent != "" {
+		switch strings.ToLower(strings.TrimSpace(intent)) {
+		case "quick_recon":
+			toolName = "akemi_quick_recon"
+		case "api_hunter":
+			toolName = "akemi_api_hunter"
+		}
+	}
+
+	summary := fmt.Sprintf("Dashboard scan (%s) completed for %s with %d finding(s), %d subdomain(s).",
+		intent, target, len(result.VulnFindings), len(result.Subdomains))
+
+	structured := map[string]interface{}{
+		"target":        target,
+		"intent":        intent,
+		"counts":        result.Counts,
+		"findings":      result.VulnFindings,
+		"vuln_findings": result.VulnFindings,
+		"subdomains":    result.Subdomains,
+		"api_endpoints": result.APIEndpoints,
+		"crawl_count":   len(result.CrawlFindings),
+		"params":        result.Params,
+		"secrets":       result.Secrets,
+	}
+
+	r.services.State.RecordToolResult(toolName, summary, structured)
+
+	now := time.Now()
+	r.services.State.UpsertJob(mcpstate.JobRecord{
+		ID:          fmt.Sprintf("scan-%d", now.UnixNano()),
+		Kind:        intent,
+		Status:      "completed",
+		Target:      target,
+		StartedAt:   result.StartTime,
+		CompletedAt: &result.EndTime,
+		Summary:     summary,
+		Result:      structured,
+	})
+}
+
 // List returns all registered tools as MCP Tool descriptors.
 func (r *ToolRegistry) List() []mcp.Tool {
 	tools := make([]mcp.Tool, 0, len(r.tools))
 	for _, rt := range r.tools {
 		tools = append(tools, rt.Tool)
 	}
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
 	return tools
 }
 
@@ -127,7 +218,7 @@ func (r *ToolRegistry) Call(ctxIface interface{}, name string, args map[string]i
 		ctx = context.Background()
 	}
 	name = canonicalToolName(name)
-	rt, ok := r.tools[name]
+	_, ok := r.tools[name]
 	if !ok {
 		return nil, fmt.Errorf("tool not found: %s", name)
 	}
@@ -138,7 +229,8 @@ func (r *ToolRegistry) Call(ctxIface interface{}, name string, args map[string]i
 		)
 	}
 
-	return rt.Handler(ctx, args, r.services)
+	blocks, err := r.executeTool(ctx, name, args)
+	return redactContentBlocks(blocks), err
 }
 
 func canonicalToolName(name string) string {
@@ -531,6 +623,22 @@ func (r *ToolRegistry) registerAll() {
 		Handler: handleWriteReport,
 	})
 
+	r.register(RegisteredTool{
+		Tool: mcp.Tool{
+			Name:        "akemi_read_project_findings",
+			Description: "Inspect, read, and load scan findings, vulnerabilities, and discovery artifacts from any temporary or saved project directory (`.akemi` archives, project folders, report files). Automatically populates backend state for subsequent analysis.",
+			InputSchema: mcp.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]mcp.Property{
+					"path":      {Type: "string", Description: "Optional explicit file or directory path to inspect/read. Defaults to searching workemi/Projects, workemi, and working directory."},
+					"target":    {Type: "string", Description: "Optional target URL/domain to filter archives by"},
+					"max_bytes": {Type: "integer", Description: "Maximum bytes to read from text/markdown files", Default: float64(5242880)},
+				},
+			},
+		},
+		Handler: handleReadProjectFindings,
+	})
+
 	// ── Technology Fingerprinting ────────────────────────
 	r.register(RegisteredTool{
 		Tool: mcp.Tool{
@@ -611,6 +719,34 @@ func (r *ToolRegistry) registerAll() {
 			},
 		},
 		Handler: handleCancelRun,
+	})
+	r.register(RegisteredTool{
+		Tool: mcp.Tool{
+			Name:        "akemi_approve_action",
+			Description: "Approve one pending destructive action. The approval ID is single-use for the matching tool and target.",
+			InputSchema: mcp.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]mcp.Property{
+					"approval_id": {Type: "string", Description: "Approval ID returned by an approval_required result"},
+				},
+				Required: []string{"approval_id"},
+			},
+		},
+		Handler: handleApproveAction,
+	})
+	r.register(RegisteredTool{
+		Tool: mcp.Tool{
+			Name:        "akemi_deny_action",
+			Description: "Deny one pending destructive action.",
+			InputSchema: mcp.ToolInputSchema{
+				Type: "object",
+				Properties: map[string]mcp.Property{
+					"approval_id": {Type: "string", Description: "Approval ID returned by an approval_required result"},
+				},
+				Required: []string{"approval_id"},
+			},
+		},
+		Handler: handleDenyAction,
 	})
 	r.register(RegisteredTool{
 		Tool: mcp.Tool{

@@ -9,7 +9,9 @@ import (
 
 	core "Akemi/internal/core"
 	"Akemi/internal/engagement"
+	"Akemi/internal/execution"
 	"Akemi/internal/mcp"
+	"Akemi/internal/results"
 	"Akemi/internal/toolbridge"
 )
 
@@ -125,6 +127,25 @@ func handleConfigureTarget(ctx context.Context, args map[string]interface{}, svc
 	if target.BaseURL == "" && target.Domain == "" && len(target.Hosts) == 0 && len(target.CIDRs) == 0 {
 		return nil, fmt.Errorf("configure target requires base_url, domain, hosts, or cidrs")
 	}
+	if target.Domain == "" && target.BaseURL != "" {
+		if parsed, parseErr := url.Parse(target.BaseURL); parseErr == nil {
+			target.Domain = parsed.Hostname()
+		}
+	}
+	scope := execution.NormalizeScope(execution.ScopePolicy{}, target)
+	candidates := append([]string{target.BaseURL, target.Domain}, target.Hosts...)
+	candidates = append(candidates, target.CIDRs...)
+	filtered := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) != "" {
+			filtered = append(filtered, candidate)
+		}
+	}
+	candidates = filtered
+	if err := execution.ValidateTargets(scope, candidates); err != nil {
+		return nil, err
+	}
+
 	if err := svc.Context.SetTarget(ctx, target); err != nil {
 		return nil, err
 	}
@@ -345,7 +366,8 @@ func defaults(ctx context.Context, svc *Services) engagement.ScanDefaults {
 }
 
 func jsonContent(summary string, value interface{}) ([]mcp.ContentBlock, error) {
-	data, err := json.MarshalIndent(value, "", "  ")
+	redacted, _ := results.Redact(value)
+	data, err := json.MarshalIndent(redacted, "", "  ")
 	if err != nil {
 		return nil, err
 	}

@@ -16,12 +16,15 @@ import (
 
 	akemiarchive "Akemi/internal/archive"
 	ui "Akemi/internal/cli/ui"
+	"Akemi/internal/config"
 	core "Akemi/internal/core"
 	"Akemi/internal/engagement"
+	"Akemi/internal/execution"
 	"Akemi/internal/project"
 	"Akemi/internal/service"
 	"Akemi/internal/session"
 	"Akemi/internal/tui/dashboard"
+	"Akemi/internal/version"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -37,6 +40,7 @@ type Services struct {
 	Subdomain    *service.SubdomainService
 	Reporting    *service.ReportingService
 	MCPContext   engagement.ContextStore
+	Execution    *execution.Manager
 }
 
 var (
@@ -53,6 +57,7 @@ var (
 	rootAkemiImport string
 	rootProjectPath string
 	rootNoProject   bool
+	currentVersion  = version.Current
 )
 
 // RootCmd is the base Akemi command. When run without subcommands,
@@ -65,13 +70,25 @@ vulnerability validation framework. It bridges the gap between massive
 reconnaissance and actionable exploitation.
 
 Run 'akemi [command] --help' for details on each subcommand.`,
-	Version: "2.0.0-dev",
-	RunE:    runRoot,
+	Version: version.Current,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return config.EnsureWorkemiDirectory()
+	},
+	RunE: runRoot,
 }
 
 // SetVersion allows the build system to inject the real version.
 func SetVersion(v string) {
+	if strings.TrimSpace(v) == "" {
+		v = version.Current
+	}
+	currentVersion = v
 	RootCmd.Version = v
+}
+
+// CurrentVersion returns the version injected into the running CLI.
+func CurrentVersion() string {
+	return currentVersion
 }
 
 // Execute runs the root command.
@@ -192,6 +209,7 @@ func getServices() *Services {
 			Subdomain:    service.NewSubdomainService(logger),
 			Reporting:    service.NewReportingService(logger, outputDir),
 			MCPContext:   engagement.NewMemoryContextStore(),
+			Execution:    execution.NewManager(100),
 		}
 	}
 	return svc
@@ -292,11 +310,16 @@ func runRoot(cmd *cobra.Command, args []string) error {
 
 	urlFlag, _ := cmd.Flags().GetString("url")
 	if urlFlag == "" && !hasAnyActiveFlag(cmd) {
-		// No URL and no specific action — launch the interactive dashboard.
-		//
-		// If the user didn't specify --project or --no-project, show the
-		// interactive project selection screen first.
-		if rootProjectPath == "" && !rootNoProject {
+		// Ensure workemi/akemi.conf exists and check configured state
+		configPath, appCfg, isUnconfigured, configErr := config.EnsureWorkemiConfigFile()
+		if configErr != nil {
+			return fmt.Errorf("initialize workemi: %w", configErr)
+		}
+
+		// If unconfigured (configured = 0), skip ProjectSelector and show First-Run Setup Wizard directly
+		if isUnconfigured {
+			rootNoProject = true
+		} else if rootProjectPath == "" && !rootNoProject {
 			if !rootQuiet {
 				ui.PrintASCIIArtNeon()
 			}
@@ -327,19 +350,43 @@ func runRoot(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		s := getServices()
-
+		initialArchivePath := rootAkemiImport
+		if initialArchive == nil {
+			initialArchive, initialArchivePath, err = loadProjectInitialArchive(s.Project)
+			if err != nil {
+				return err
+			}
+		}
 		// Print project context if a project is loaded.
 		printProjectBanner(s.Project)
 
 		dashSvc := dashboard.ConvertServices(s.Scanner, s.Discovery, s.Vuln, s.Subdomain, s.Reporting)
-		dashSvc.ArchiveDir = rootOutputDir
+		dashSvc.ConfigPath = configPath
+		if isUnconfigured {
+			dashSvc.Configured = 0
+		} else {
+			dashSvc.Configured = 1
+		}
+		if appCfg != nil && strings.TrimSpace(appCfg.General.ProjectsDir) != "" {
+			dashSvc.ProjectsDir = appCfg.General.ProjectsDir
+			if !filepath.IsAbs(dashSvc.ProjectsDir) {
+				dashSvc.ArchiveDir = filepath.Join(config.WorkemiDirectory(), dashSvc.ProjectsDir)
+			} else {
+				dashSvc.ArchiveDir = dashSvc.ProjectsDir
+			}
+		} else {
+			dashSvc.ArchiveDir = filepath.Join(config.WorkemiDirectory(), "Projects")
+		}
+
 		dashSvc.SessionState = s.SessionState
 		if s.Project != nil {
 			dashSvc.ArchiveDir = s.Project.ResolvePath("archives")
 			dashSvc.Project = s.Project
 		}
 		dashSvc.InitialArchive = initialArchive
+		dashSvc.InitialArchivePath = initialArchivePath
 		dashSvc.MCPContext = s.MCPContext
+		dashSvc.Execution = s.Execution
 		dashSvc.AssistantLoad = buildDashboardAssistantLoad(s, core.Logger())
 		dashSvc.AssistantSetup = buildDashboardAssistantSetup(s, core.Logger())
 		dashSvc.APISettingsLoad = buildDashboardAPISettingsLoad()
@@ -740,4 +787,18 @@ func loadAkemiArchive(path string) (*akemiarchive.File, error) {
 		return nil, fmt.Errorf("import .akemi archive: %w", err)
 	}
 	return file, nil
+}
+
+// loadProjectInitialArchive restores the newest valid archive saved under the
+// selected project's archives directory. Explicit --import-akemi input always
+// takes precedence over this automatic restore.
+func loadProjectInitialArchive(proj *project.Project) (*akemiarchive.File, string, error) {
+	if proj == nil {
+		return nil, "", nil
+	}
+	file, path, err := akemiarchive.LoadLatestArchive(proj.ResolvePath("archives"))
+	if err != nil {
+		return nil, "", fmt.Errorf("load latest project archive: %w", err)
+	}
+	return file, path, nil
 }

@@ -2,9 +2,13 @@ package tools
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	akemiarchive "Akemi/internal/archive"
 	core "Akemi/internal/core"
+	mcpstate "Akemi/internal/mcp/state"
 	"Akemi/internal/toolbridge"
 )
 
@@ -68,6 +72,12 @@ func TestFullSurfaceScanAliasCallsFullSurfaceMap(t *testing.T) {
 		t.Fatal("akemi_full_surface_scan alias is not listed in the MCP contract")
 	}
 
+	if _, err := reg.Call(context.Background(), "akemi_configure_target", map[string]interface{}{
+		"domain": "example.test",
+	}); err != nil {
+		t.Fatalf("target configuration failed: %v", err)
+	}
+
 	result, err := reg.CallStructured(context.Background(), "akemi_full_surface_scan", map[string]interface{}{
 		"target": "https://example.test",
 		"depth":  1,
@@ -116,5 +126,80 @@ func TestFullSurfaceMapToolStreamsProgressAndAPIParameters(t *testing.T) {
 	}
 	if !sawAPIParameter {
 		t.Fatal("API parameters were not streamed to the dashboard bridge")
+	}
+}
+
+func TestCollectLatestFindingsSearchesAllScanTools(t *testing.T) {
+	store := mcpstate.NewStore(nil)
+	store.RecordToolResult("akemi_quick_recon", "Quick recon completed", map[string]interface{}{
+		"findings": []interface{}{
+			map[string]interface{}{
+				"id":       "vuln-1",
+				"name":     "Missing Security Header",
+				"severity": "low",
+			},
+		},
+	})
+	store.RecordToolResult("akemi_api_hunter", "API hunter completed", map[string]interface{}{
+		"vuln_findings": []interface{}{
+			map[string]interface{}{
+				"id":       "vuln-2",
+				"name":     "Unauthenticated API Endpoint",
+				"severity": "high",
+			},
+		},
+	})
+
+	findings := collectLatestFindings(store)
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings collected across scan tools, got %d", len(findings))
+	}
+}
+
+func TestReadProjectFindingsTool(t *testing.T) {
+	tempDir := t.TempDir()
+	arch := akemiarchive.New(akemiarchive.ScanConfig{
+		Target: "example.com",
+		Intent: "full_surface_map",
+	}, "Test Run", akemiarchive.Results{
+		Findings: []core.VulnFinding{
+			{
+				ID:          "VULN-001",
+				Name:        "Test Injection Finding",
+				Severity:    "high",
+				Target:      "https://example.com/search",
+				Description: "Reflected XSS in search parameter",
+			},
+		},
+	}, nil)
+
+	archPath := filepath.Join(tempDir, "example.com.akemi")
+	if err := akemiarchive.WriteFile(archPath, arch); err != nil {
+		t.Fatalf("failed to write test archive: %v", err)
+	}
+
+	state := mcpstate.NewStore(nil)
+	svc := &Services{State: state}
+
+	blocks, err := handleReadProjectFindings(context.Background(), map[string]interface{}{
+		"path": tempDir,
+	}, svc)
+	if err != nil {
+		t.Fatalf("handleReadProjectFindings failed: %v", err)
+	}
+
+	if len(blocks) == 0 {
+		t.Fatal("expected content blocks returned")
+	}
+
+	text := blocks[0].Text
+	if !strings.Contains(text, "Test Injection Finding") {
+		t.Fatalf("expected report text to contain finding title, got: %s", text)
+	}
+
+	// Verify findings were automatically synced into state store
+	latest := collectLatestFindings(state)
+	if len(latest) != 1 {
+		t.Fatalf("expected 1 finding auto-synced to mcp state, got %d", len(latest))
 	}
 }

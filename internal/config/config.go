@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"Akemi/internal/version"
 	"github.com/BurntSushi/toml"
 )
 
@@ -39,10 +40,12 @@ type AkemiConfig struct {
 // ── General ──────────────────────────────────────────────────────
 
 type GeneralConfig struct {
-	LogLevel  string `toml:"log_level"`
-	Quiet     bool   `toml:"quiet"`
-	Timeout   int    `toml:"timeout"`
-	OutputDir string `toml:"output_dir"`
+	LogLevel    string `toml:"log_level"`
+	Quiet       bool   `toml:"quiet"`
+	Timeout     int    `toml:"timeout"`
+	OutputDir   string `toml:"output_dir"`
+	Configured  int    `toml:"configured"`
+	ProjectsDir string `toml:"projects_dir"`
 }
 
 // ── Proxy ────────────────────────────────────────────────────────
@@ -264,10 +267,12 @@ type AdvancedConfig struct {
 func DefaultConfig() *AkemiConfig {
 	return &AkemiConfig{
 		General: GeneralConfig{
-			LogLevel:  "info",
-			Quiet:     false,
-			Timeout:   10,
-			OutputDir: "./results",
+			LogLevel:    "info",
+			Quiet:       false,
+			Timeout:     10,
+			OutputDir:   "./results",
+			Configured:  0,
+			ProjectsDir: "Projects",
 		},
 		Proxy: ProxyConfig{
 			NoProxy: "localhost,127.0.0.1,.local",
@@ -343,8 +348,8 @@ func DefaultConfig() *AkemiConfig {
 				ReasoningEffort: "high",
 			},
 			Google: LLMVendorConfig{
-				Model:       "gemini-2.0-flash-exp",
-				BaseURL:     "https://generativelanguage.googleapis.com/v1beta",
+				Model:       "gemini-3.6-flash",
+				BaseURL:     "https://generativelanguage.googleapis.com/v1beta/openai",
 				MaxTokens:   4096,
 				Temperature: 0.3,
 				MaxRPM:      30,
@@ -379,7 +384,7 @@ func DefaultConfig() *AkemiConfig {
 		},
 		Advanced: AdvancedConfig{
 			MaxBodyCapture:  1048576,
-			UserAgent:       "Akemi/2.0.0 (Security Assessment Framework)",
+			UserAgent:       version.UserAgent,
 			FollowRedirects: true,
 			MaxRedirects:    10,
 			TLSVerify:       true,
@@ -390,11 +395,13 @@ func DefaultConfig() *AkemiConfig {
 // FindConfigFile searches for a config file in standard locations.
 func FindConfigFile() string {
 	candidates := []string{
+		filepath.Join(WorkemiDirectory(), "akemi.conf"),
 		"akemi.conf",
 		".akemi.toml",
 		"akemi.toml",
 	}
 	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, "workemi", "akemi.conf"))
 		for _, name := range []string{"akemi.conf", ".akemi.toml", "akemi.toml"} {
 			candidates = append(candidates, ancestorConfigCandidates(wd, name)...)
 		}
@@ -407,6 +414,7 @@ func FindConfigFile() string {
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates,
+			filepath.Join(home, "workemi", "akemi.conf"),
 			filepath.Join(home, ".akemi", "config.toml"),
 			filepath.Join(home, ".akemi.conf"),
 		)
@@ -418,6 +426,161 @@ func FindConfigFile() string {
 		}
 	}
 	return ""
+}
+
+// WorkemiDirectory returns Akemi's default absolute working directory.
+// It resolves the Akemi application root so binaries in bin/windows share one workemi.
+func WorkemiDirectory() string {
+	if override := strings.TrimSpace(os.Getenv("AKEMI_WORKEMI_DIR")); override != "" {
+		if absolute, err := filepath.Abs(override); err == nil {
+			return absolute
+		}
+		return filepath.Clean(override)
+	}
+	return filepath.Join(akemiApplicationDirectory(), "workemi")
+}
+
+func akemiApplicationDirectory() string {
+	var candidates []string
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, cwd)
+	}
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Dir(executable))
+	}
+	for _, candidate := range candidates {
+		if root := findAkemiRoot(candidate); root != "" {
+			return root
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return "."
+}
+
+func findAkemiRoot(start string) string {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return ""
+	}
+	for {
+		if isAkemiRoot(dir) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func isAkemiRoot(dir string) bool {
+	probes, probesErr := os.Stat(filepath.Join(dir, "probes"))
+	bin, binErr := os.Stat(filepath.Join(dir, "bin"))
+	if probesErr != nil || binErr != nil || !probes.IsDir() || !bin.IsDir() {
+		return false
+	}
+	for _, marker := range []string{"akemi.conf", "go.mod", "cmd"} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// WorkemiConfigPath returns the absolute path to Akemi's default config file.
+func WorkemiConfigPath() string {
+	return filepath.Join(WorkemiDirectory(), "akemi.conf")
+}
+
+// EnsureWorkemiDirectory creates Akemi's local working directory.
+func EnsureWorkemiDirectory() error {
+	if err := os.MkdirAll(WorkemiDirectory(), 0700); err != nil {
+		return fmt.Errorf("create workemi directory: %w", err)
+	}
+	return nil
+}
+
+// EnsureWorkemiConfigFile checks for akemi.conf in the 'workemi' working directory.
+// If missing, creates workemi/akemi.conf with defaults and configured = 0.
+func EnsureWorkemiConfigFile() (string, *AkemiConfig, bool, error) {
+	configPath := WorkemiConfigPath()
+	if err := EnsureWorkemiDirectory(); err != nil {
+		return configPath, nil, true, err
+	}
+
+	if _, err := os.Stat(configPath); err != nil {
+		if !os.IsNotExist(err) {
+			return configPath, nil, true, fmt.Errorf("inspect config %s: %w", configPath, err)
+		}
+
+		var content string
+		// Recycle root akemi.conf if it exists.
+		if rootData, readErr := os.ReadFile("akemi.conf"); readErr == nil && len(rootData) > 0 {
+			content = string(rootData)
+			content = upsertTOMLValue(content, "general", "configured", "0")
+			if !strings.Contains(content, "projects_dir =") {
+				content = upsertTOMLValue(content, "general", "projects_dir", strconv.Quote("Projects"))
+			}
+		} else {
+			content = `# Akemi Configuration
+[general]
+configured = 0
+projects_dir = "Projects"
+log_level = "info"
+quiet = false
+timeout = 10
+output_dir = "./results"
+`
+		}
+		if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+			return configPath, nil, true, fmt.Errorf("write config %s: %w", configPath, err)
+		}
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		return configPath, DefaultConfig(), true, err
+	}
+
+	// UpdateFirstRunConfig persists general first-run configuration settings (configured, projects_dir, LLM settings).
+	isUnconfigured := (cfg.General.Configured == 0)
+	return configPath, cfg, isUnconfigured, nil
+}
+
+func UpdateFirstRunConfig(path string, configured int, projectsDir string, provider string, apiKey string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		path = WorkemiConfigPath()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("read config %s: %w", path, err)
+	}
+	content := string(data)
+	content = upsertTOMLValue(content, "general", "configured", strconv.Itoa(configured))
+	if strings.TrimSpace(projectsDir) != "" {
+		content = upsertTOMLValue(content, "general", "projects_dir", strconv.Quote(strings.TrimSpace(projectsDir)))
+	}
+	if strings.TrimSpace(provider) != "" {
+		norm := NormalizeLLMProvider(provider)
+		if norm != "" {
+			content = repairLLMTOMLTables(content)
+			content = upsertTOMLValue(content, "llm", "provider", strconv.Quote(norm))
+			if strings.TrimSpace(apiKey) != "" {
+				content = upsertTOMLValue(content, "llm."+norm, "api_key", strconv.Quote(strings.TrimSpace(apiKey)))
+			}
+		}
+	}
+
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		_ = os.MkdirAll(dir, 0700)
+	}
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		return "", fmt.Errorf("write config %s: %w", path, err)
+	}
+	return path, nil
 }
 
 func ancestorConfigCandidates(start, name string) []string {
@@ -561,6 +724,8 @@ func NormalizeLLMProvider(provider string) string {
 	switch provider {
 	case "anthropic", "openai", "deepseek", "google", "local":
 		return provider
+	case "gemini":
+		return "google"
 	default:
 		return ""
 	}
@@ -662,7 +827,13 @@ func (c *LLMConfig) APIKeyForProvider(provider string) string {
 		"google":    "AKEMI_LLM_GOOGLE_KEY",
 		"local":     "AKEMI_LLM_LOCAL_KEY",
 	}
-	if envKey, ok := envMap[provider]; ok {
+	if provider == "google" {
+		for _, key := range []string{"AKEMI_LLM_GOOGLE_KEY", "AKEMI_LLM_GEMINI_KEY", "GEMINI_API_KEY"} {
+			if val := os.Getenv(key); val != "" {
+				return val
+			}
+		}
+	} else if envKey, ok := envMap[provider]; ok {
 		if val := os.Getenv(envKey); val != "" {
 			return val
 		}

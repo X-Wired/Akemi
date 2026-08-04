@@ -2,11 +2,10 @@ package dashboard
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"Akemi/internal/config"
 	"Akemi/internal/project"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,10 +22,10 @@ import (
 type selectorState int
 
 const (
-	selMain     selectorState = iota // top-level: pick a path
-	selCreate                        // creating: enter name + directory
-	selOpen                          // opening: pick from list or browse
-	selDone                          // finished: return result
+	selMain   selectorState = iota // top-level: pick a path
+	selCreate                      // creating: enter name + directory
+	selOpen                        // opening: pick from list or browse
+	selDone                        // finished: return result
 )
 
 // ProjectSelectResult is returned to the caller when the selector exits.
@@ -55,7 +54,7 @@ type projectSelectorModel struct {
 	registry    *project.Registry
 	registryErr string
 	openCursor  int
-	openOpts    []string              // registry entry display strings
+	openOpts    []string // registry entry display strings
 	openEntries []project.RegistryEntry
 	openBrowse  bool
 	browsePath  string
@@ -94,11 +93,8 @@ func NewProjectSelector() *projectSelectorModel {
 		m.openOpts = append(m.openOpts, "Browse for project directory...")
 	}
 
-	// Default create directory.
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		m.createDir = filepath.Join(home, "akemi-projects")
-	}
+	// Default create directory is Akemi's shared workemi directory.
+	m.createDir = config.WorkemiDirectory()
 
 	return m
 }
@@ -323,8 +319,14 @@ func (m *projectSelectorModel) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.C
 }
 
 func (m *projectSelectorModel) createProjectCmd() tea.Cmd {
+	parent := expandHomePath(m.createDir)
+	name := m.createName
 	return func() tea.Msg {
-		proj, err := project.CreateProject(m.createDir, m.createName)
+		root, err := project.ProjectDirectory(parent, name)
+		if err != nil {
+			return projectCreateMsg{err: err}
+		}
+		proj, err := project.CreateProject(root, name)
 		return projectCreateMsg{proj: proj, err: err}
 	}
 }
@@ -424,15 +426,17 @@ func (m *projectSelectorModel) viewCreate() string {
 	sb.WriteString("\n\n")
 
 	// Directory field
-	dirLabel := "  Directory:     "
+	dirLabel := "  Parent directory: "
 	if m.createStep == 1 {
 		dirLabel = selectorCursorStyle.Render("▶ ") + "Directory:     "
 	}
 	displayDir := m.createDir
 	if displayDir == "" {
-		displayDir = selectorDimStyle.Render("<e.g. ~/engagements/acme-ext>")
+		displayDir = selectorDimStyle.Render("<e.g. ~/engagements>")
 	}
 	sb.WriteString(dirLabel + selectorInputStyle.Render(displayDir))
+	sb.WriteString("\n\n")
+	sb.WriteString(selectorHelpStyle.Render("  The project will be created as: <parent>/<project-name>"))
 	sb.WriteString("\n\n")
 
 	if m.createErr != "" {

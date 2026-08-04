@@ -1,8 +1,8 @@
-# Akemi v2.0.0 multi-stage Docker build
+# Akemi v2.1.0 multi-stage Docker build
 
 ARG GO_VERSION=1.24
 ARG RUST_VERSION=1.85
-ARG AKEMI_VERSION=2.0.0
+ARG AKEMI_VERSION=2.1.0
 
 # Stage 1: Rust engines (Akemi-Spear + DotHound)
 FROM rust:${RUST_VERSION}-alpine AS rust-builder

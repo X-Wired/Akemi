@@ -519,21 +519,39 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "enter":
-		m.target = m.inputVal
+	switch msg.Type {
+	case tea.KeyEnter:
+		m.target = core.CleanInput(m.inputVal)
 		m.inputMode = false
-	case "esc":
+	case tea.KeyEsc:
 		m.inputMode = false
-	case "backspace":
+	case tea.KeyBackspace:
 		if len(m.inputVal) > 0 {
-			m.inputVal = m.inputVal[:len(m.inputVal)-1]
+			runes := []rune(m.inputVal)
+			m.inputVal = string(runes[:len(runes)-1])
 		}
+	case tea.KeyRunes:
+		m.inputVal += core.CleanInput(string(msg.Runes))
 	default:
-		if len(msg.String()) == 1 {
-			m.inputVal += msg.String()
+		switch msg.String() {
+		case "enter":
+			m.target = core.CleanInput(m.inputVal)
+			m.inputMode = false
+		case "esc":
+			m.inputMode = false
+		case "backspace", "ctrl+h":
+			if len(m.inputVal) > 0 {
+				runes := []rune(m.inputVal)
+				m.inputVal = string(runes[:len(runes)-1])
+			}
+		default:
+			str := msg.String()
+			if len(str) > 0 && !strings.HasPrefix(str, "ctrl+") && !strings.HasPrefix(str, "alt+") {
+				m.inputVal += core.CleanInput(str)
+			}
 		}
 	}
+	m.inputVal = core.CleanInput(m.inputVal)
 	return m, nil
 }
 

@@ -1,7 +1,10 @@
 package vuln
 
 import (
+	"context"
+
 	core "Akemi/internal/core"
+	"Akemi/internal/execution"
 	"fmt"
 	"io"
 	"net/http"
@@ -101,6 +104,7 @@ type ExploitHints struct {
 
 // ProbeConfig holds the configuration for the vuln prober.
 type ProbeConfig struct {
+	Context      context.Context
 	Timeout      int
 	Threads      int
 	TemplateDir  string   // Directory containing YAML probe templates (default: ./probes/)
@@ -388,7 +392,7 @@ func ProbeParamsWithCandidates(rawURL string, candidateParams []string, cfg Prob
 	// ── Context-Aware Fingerprinting ─────────────────────
 	var targetCtx *core.TargetContext
 	if cfg.Fingerprint {
-		client := core.CreateHTTPClient(cfg.Timeout)
+		client := execution.WrapHTTPClient(cfg.Context, core.CreateHTTPClient(cfg.Timeout))
 		var err error
 		targetCtx, err = FingerprintTarget(rawURL, candidateParams, client)
 		if err != nil {
@@ -449,7 +453,7 @@ func legacyProbeParams(rawURL string, candidateParams []string, cfg ProbeConfig)
 	}
 
 	baseURL := fmt.Sprintf("%s://%s%s", parsed.Scheme, parsed.Host, parsed.Path)
-	client := core.CreateHTTPClient(cfg.Timeout)
+	client := execution.WrapHTTPClient(cfg.Context, core.CreateHTTPClient(cfg.Timeout))
 
 	var findings []VulnFinding
 	var mu sync.Mutex

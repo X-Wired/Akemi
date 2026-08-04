@@ -206,6 +206,41 @@ func (s *Store) LastStructured(toolName string) map[string]interface{} {
 	return cloneMap(record.StructuredContent)
 }
 
+// LatestStructured returns the most recently recorded structured result for
+// any of the supplied tools. Resource values are derived from several tools,
+// so selecting by a fixed tool priority can keep an older result visible after
+// a newer tool completes.
+func (s *Store) LatestStructured(toolNames ...string) map[string]interface{} {
+	if s == nil {
+		return nil
+	}
+
+	allowed := make(map[string]struct{}, len(toolNames))
+	for _, toolName := range toolNames {
+		allowed[toolName] = struct{}{}
+	}
+
+	s.mu.RLock()
+	var latest ToolRecord
+	var found bool
+	for toolName, record := range s.byTool {
+		if len(allowed) > 0 {
+			if _, ok := allowed[toolName]; !ok {
+				continue
+			}
+		}
+		if !found || record.UpdatedAt.After(latest.UpdatedAt) {
+			latest = record
+			found = true
+		}
+	}
+	s.mu.RUnlock()
+	if !found {
+		return nil
+	}
+	return cloneMap(latest.StructuredContent)
+}
+
 func cloneJob(job JobRecord) JobRecord {
 	job.Result = cloneMap(job.Result)
 	return job

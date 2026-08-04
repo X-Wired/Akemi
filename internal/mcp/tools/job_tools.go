@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	core "Akemi/internal/core"
+	"Akemi/internal/execution"
 	"Akemi/internal/mcp"
 	mcpstate "Akemi/internal/mcp/state"
 )
@@ -15,7 +17,7 @@ func handleStartRun(ctx context.Context, args map[string]interface{}, svc *Servi
 	if svc == nil || svc.Jobs == nil {
 		return nil, fmt.Errorf("job manager is not configured")
 	}
-	job, err := svc.Jobs.Start(svc, getString(args, "kind"), args)
+	job, err := svc.Jobs.StartContext(ctx, svc, getString(args, "kind"), args)
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +58,37 @@ func handleCancelRun(ctx context.Context, args map[string]interface{}, svc *Serv
 	})
 }
 
+func handleApproveAction(ctx context.Context, args map[string]interface{}, svc *Services) ([]mcp.ContentBlock, error) {
+	_ = ctx
+	if svc == nil || svc.Execution == nil {
+		return nil, fmt.Errorf("approval manager is not configured")
+	}
+	id := strings.TrimSpace(getString(args, "approval_id"))
+	if id == "" {
+		return nil, fmt.Errorf("approval_id is required")
+	}
+	request, ok := svc.Execution.ResolveApproval(id, execution.ApprovalApproved)
+	if !ok {
+		return nil, fmt.Errorf("approval request not found or already resolved: %s", id)
+	}
+	return jsonContent(fmt.Sprintf("Approved %s for %s.", request.ID, request.ToolName), request)
+}
+
+func handleDenyAction(ctx context.Context, args map[string]interface{}, svc *Services) ([]mcp.ContentBlock, error) {
+	_ = ctx
+	if svc == nil || svc.Execution == nil {
+		return nil, fmt.Errorf("approval manager is not configured")
+	}
+	id := strings.TrimSpace(getString(args, "approval_id"))
+	if id == "" {
+		return nil, fmt.Errorf("approval_id is required")
+	}
+	request, ok := svc.Execution.ResolveApproval(id, execution.ApprovalDenied)
+	if !ok {
+		return nil, fmt.Errorf("approval request not found or already resolved: %s", id)
+	}
+	return jsonContent(fmt.Sprintf("Denied %s for %s.", request.ID, request.ToolName), request)
+}
 func handleGetArtifact(ctx context.Context, args map[string]interface{}, svc *Services) ([]mcp.ContentBlock, error) {
 	_ = ctx
 	artifactID := getString(args, "artifact_id")
@@ -143,7 +176,11 @@ func collectLatestFindings(store *mcpstate.Store) []map[string]interface{} {
 		return nil
 	}
 	var findings []map[string]interface{}
-	for _, toolName := range []string{"akemi_full_surface_map", "akemi_probe_vulns", "akemi_check_headers", "akemi_tech_fingerprint"} {
+	for _, toolName := range []string{
+		"akemi_full_surface_map", "akemi_full_surface_scan", "akemi_quick_recon", "akemi_api_hunter",
+		"akemi_probe_vulns", "akemi_check_headers", "akemi_tech_fingerprint", "akemi_crawl",
+		"akemi_port_scan", "akemi_mine_params", "akemi_analyze_js", "akemi_discover_api",
+	} {
 		collectFindings(store.LastStructured(toolName), &findings)
 	}
 	return findings
@@ -155,15 +192,41 @@ func collectFindings(value interface{}, out *[]map[string]interface{}) {
 		for key, item := range v {
 			lower := strings.ToLower(key)
 			if lower == "vuln_findings" || lower == "findings" || lower == "vulnerabilities" || lower == "header_findings" {
-				if list, ok := item.([]interface{}); ok {
-					appendFindingList(list, out)
-				}
+				appendFindingListAny(item, out)
 				continue
 			}
 			collectFindings(item, out)
 		}
 	case []interface{}:
 		appendFindingList(v, out)
+	case []core.VulnFinding:
+		appendFindingListAny(v, out)
+	case []map[string]interface{}:
+		appendFindingListAny(v, out)
+	}
+}
+
+func appendFindingListAny(item interface{}, out *[]map[string]interface{}) {
+	if list, ok := item.([]interface{}); ok {
+		appendFindingList(list, out)
+	} else if vf, ok := item.([]core.VulnFinding); ok {
+		for _, f := range vf {
+			*out = append(*out, map[string]interface{}{
+				"id":          f.ID,
+				"name":        f.Name,
+				"severity":    f.Severity,
+				"description": f.Description,
+				"target":      f.Target,
+				"evidence":    f.Evidence,
+				"remediation": f.Remediation,
+			})
+		}
+	} else if ms, ok := item.([]map[string]interface{}); ok {
+		for _, m := range ms {
+			if stringField(m, "severity") != "" || stringField(m, "name") != "" || stringField(m, "title") != "" {
+				*out = append(*out, cloneFinding(m))
+			}
+		}
 	}
 }
 

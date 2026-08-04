@@ -42,6 +42,8 @@ type DiscoveryPanel struct {
 	detailMode    bool
 	detailItem    string
 	detailSection string
+	details       map[string]string
+	cursorVisible bool
 
 	// Tracking summary
 	totalSubdomains int
@@ -61,7 +63,9 @@ type DiscoveryPanel struct {
 // NewDiscoveryPanel creates a new discovery panel.
 func NewDiscoveryPanel() *DiscoveryPanel {
 	dp := &DiscoveryPanel{
-		activeTab: 0,
+		activeTab:     0,
+		cursorVisible: true,
+		details:       make(map[string]string),
 		sections: []*DiscoverySection{
 			{Name: "Subdomains", Icon: "SUB", Count: 0, Items: make([]string, 0)},
 			{Name: "Ports", Icon: "PRT", Count: 0, Items: make([]string, 0)},
@@ -100,6 +104,10 @@ func (dp *DiscoveryPanel) Init() tea.Cmd {
 // Update handles messages.
 func (dp *DiscoveryPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case CursorBlinkMsg:
+		dp.cursorVisible = msg.Visible
+		return dp, nil
+
 	case tea.KeyMsg:
 		return dp.handleKey(msg)
 
@@ -122,7 +130,7 @@ func (dp *DiscoveryPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-switch to a section when it receives its first item
 		sectionIdx := dp.sectionIndex(msg.Section)
 		wasEmpty := sectionIdx >= 0 && len(dp.sections[sectionIdx].Items) == 0
-		if dp.AddItemWithKey(msg.Section, msg.Key, msg.Item) && wasEmpty {
+		if dp.AddItemWithKeyAndDetail(msg.Section, msg.Key, msg.Item, msg.Detail) && wasEmpty {
 			dp.activeTab = sectionIdx
 			dp.scrollY = 0
 			dp.filteredItems = nil
@@ -274,6 +282,7 @@ func (dp *DiscoveryPanel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Enter filter mode (close detail if open)
 		dp.filterMode = true
 		dp.filterInput = ""
+		dp.cursorVisible = true
 		dp.filteredItems = nil
 		dp.detailMode = false
 		dp.scrollY = 0
@@ -287,6 +296,9 @@ func (dp *DiscoveryPanel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			dp.detailMode = true
 			dp.detailItem = items[dp.scrollY]
 			dp.detailSection = dp.sections[dp.activeTab].Name
+			if detail := dp.itemDetail(dp.detailSection, dp.detailItem); detail != "" {
+				dp.detailItem = detail
+			}
 		}
 		return dp, nil
 	case "c", "y":
@@ -494,7 +506,10 @@ func (dp *DiscoveryPanel) View() string {
 	if dp.filterMode {
 		filterLabel := AccentText.Render("[FILTER]")
 		filterText := DimText.Render(fmt.Sprintf(" /%s", dp.filterInput))
-		cursor := AccentText.Render("█")
+		cursor := ""
+		if dp.cursorVisible {
+			cursor = AccentText.Render("█")
+		}
 		sb.WriteString(fmt.Sprintf("%s%s%s\n", filterLabel, filterText, cursor))
 	}
 
@@ -546,13 +561,60 @@ func (dp *DiscoveryPanel) renderDetailPopover() string {
 	// Section name
 	inner.WriteString(AccentText.Render(fmt.Sprintf("Section: %s", dp.detailSection)))
 	inner.WriteString("\n")
-	inner.WriteString(DimText.Render(strings.Repeat("─", popoverWidth-4)))
+	inner.WriteString(DimText.Render(strings.Repeat("─", max(10, popoverWidth-4))))
 	inner.WriteString("\n\n")
 
-	// Item content (word-wrapped manually)
-	inner.WriteString(dp.detailItem)
-	inner.WriteString("\n\n")
+	if strings.EqualFold(dp.detailSection, "Params") {
+		// Format parameter detail with explicit fields
+		item := dp.detailItem
+		parts := strings.Fields(item)
+		paramName := ""
+		method := ""
+		source := ""
+		example := ""
 
+		for i := 0; i < len(parts); i++ {
+			p := parts[i]
+			if strings.HasPrefix(p, "?") {
+				paramName = p
+			} else if strings.HasPrefix(p, "[") && strings.HasSuffix(p, "]") {
+				method = strings.Trim(p, "[]")
+			} else if p == "src:" && i+1 < len(parts) {
+				source = parts[i+1]
+				i++
+			} else if strings.HasPrefix(p, "src:") {
+				source = strings.TrimPrefix(p, "src:")
+			} else if p == "ex:" && i+1 < len(parts) {
+				example = parts[i+1]
+				i++
+			} else if strings.HasPrefix(p, "ex:") {
+				example = strings.TrimPrefix(p, "ex:")
+			}
+		}
+
+		if paramName != "" {
+			inner.WriteString(fmt.Sprintf("  %-12s %s\n", DimText.Render("Parameter:"), AccentText.Render(paramName)))
+		}
+		if method != "" {
+			inner.WriteString(fmt.Sprintf("  %-12s %s\n", DimText.Render("Method:"), HighlightRow.Render(method)))
+		}
+		if source != "" {
+			inner.WriteString(fmt.Sprintf("  %-12s %s\n", DimText.Render("Source:"), source))
+		}
+		if example != "" {
+			inner.WriteString(fmt.Sprintf("  %-12s %s\n", DimText.Render("Example:"), example))
+		}
+		if paramName == "" && method == "" && source == "" {
+			inner.WriteString(dp.detailItem)
+			inner.WriteString("\n")
+		}
+	} else {
+		// Item content
+		inner.WriteString(dp.detailItem)
+		inner.WriteString("\n")
+	}
+
+	inner.WriteString("\n")
 	// Hint
 	inner.WriteString(DimText.Render("Press Enter to copy | Esc to close"))
 
@@ -590,6 +652,12 @@ func (dp *DiscoveryPanel) AddItem(sectionName string, item string) {
 
 // AddItemWithKey adds an item to a section and deduplicates by key.
 func (dp *DiscoveryPanel) AddItemWithKey(sectionName, key, item string) bool {
+	return dp.AddItemWithKeyAndDetail(sectionName, key, item, "")
+}
+
+// AddItemWithKeyAndDetail stores a masked list item and an optional full detail
+// value that is only loaded when the operator opens the item.
+func (dp *DiscoveryPanel) AddItemWithKeyAndDetail(sectionName, key, item, detail string) bool {
 	if key == "" {
 		key = item
 	}
@@ -607,17 +675,34 @@ func (dp *DiscoveryPanel) AddItemWithKey(sectionName, key, item string) bool {
 						s.Items[i] = item
 					}
 				}
+				if detail != "" {
+					dp.details[discoveryDetailKey(sectionName, item)] = detail
+				}
 				return false
 			}
 			s.Keys[key] = struct{}{}
 			s.KeyIndex[key] = len(s.Items)
 			s.Items = append(s.Items, item)
+			if detail != "" {
+				dp.details[discoveryDetailKey(sectionName, item)] = detail
+			}
 			s.Count = len(s.Items)
 			dp.refreshTotalsFromSections()
 			return true
 		}
 	}
 	return false
+}
+
+func discoveryDetailKey(section, item string) string {
+	return strings.ToLower(strings.TrimSpace(section)) + "\x00" + item
+}
+
+func (dp *DiscoveryPanel) itemDetail(section, item string) string {
+	if dp.details == nil {
+		return ""
+	}
+	return dp.details[discoveryDetailKey(section, item)]
 }
 
 // beginScan prepares the discovery panel for a new scan without discarding
@@ -657,6 +742,7 @@ func (dp *DiscoveryPanel) reset() {
 	dp.totalParams = 0
 	dp.totalJSFiles = 0
 	dp.totalFindings = 0
+	dp.details = make(map[string]string)
 	dp.activeTab = 0
 	dp.scrollY = 0
 	dp.filterMode = false

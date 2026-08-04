@@ -4,12 +4,16 @@ package surface
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	core "Akemi/internal/core"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Services are the Akemi service interfaces used by the full surface map.
@@ -234,64 +238,89 @@ func RunFullSurfaceMap(ctx context.Context, svc Services, cfg FullSurfaceConfig,
 			return result, err
 		}
 
-		progress(cb, "Analyzing JavaScript")
-		jsTargets := uniqueOrderedStrings(append([]string{cfg.Target}, crawledURLs...))
-		for _, pageURL := range jsTargets {
-			jsResult, err := svc.Discoverer.AnalyzeJS(ctx, pageURL)
-			if err != nil {
-				result.addError("Analyzing JavaScript", err)
-			} else if jsResult != nil {
-				result.JSAnalysis = append(result.JSAnalysis, JSPageAnalysis{
-					PageURL: pageURL,
-					Result:  *jsResult,
-				})
-				result.Secrets = append(result.Secrets, jsResult.Secrets...)
-				result.mergeHiddenParams(pageURL, jsResult.HiddenParams)
-				if cb.JSAnalysis != nil {
-					cb.JSAnalysis(pageURL, jsResult)
-				}
-			}
-			if err := checkCtx(); err != nil {
-				return result, err
-			}
-		}
+		var mu sync.Mutex
+		g2, g2ctx := errgroup.WithContext(ctx)
 
-		progress(cb, "Discovering API surface")
-		var apiResult *core.APISurfaceResult
-		if hunter, ok := svc.Discoverer.(apiHunterDiscoverer); ok {
-			huntResult, err := hunter.HuntAPISurface(ctx, core.APIHuntRequest{
-				StartURL:       cfg.Target,
-				DiscoveredURLs: crawledURLs,
-				Mode:           "safe-active",
-				MaxCandidates:  250,
-				Threads:        cfg.Threads,
-				Timeout:        cfg.Timeout,
-			})
-			if err != nil {
-				result.addError("Discovering API surface", err)
-			} else if huntResult != nil {
-				result.APIEndpoints = append(result.APIEndpoints, huntResult.APIEndpoints...)
-				result.APISpecs = append(result.APISpecs, huntResult.APISpecs...)
-				result.APIParameters = append(result.APIParameters, huntResult.Parameters...)
-				for _, param := range huntResult.Parameters {
-					if cb.APIParameter != nil {
-						cb.APIParameter(param)
+		g2.Go(func() error {
+			progress(cb, "Analyzing JavaScript")
+			jsTargets := uniqueOrderedStrings(append([]string{cfg.Target}, crawledURLs...))
+			for _, pageURL := range jsTargets {
+				jsResult, err := svc.Discoverer.AnalyzeJS(g2ctx, pageURL)
+				if err != nil {
+					mu.Lock()
+					result.addError("Analyzing JavaScript", err)
+					mu.Unlock()
+				} else if jsResult != nil {
+					mu.Lock()
+					result.JSAnalysis = append(result.JSAnalysis, JSPageAnalysis{
+						PageURL: pageURL,
+						Result:  *jsResult,
+					})
+					result.Secrets = append(result.Secrets, jsResult.Secrets...)
+					result.mergeHiddenParams(pageURL, jsResult.HiddenParams)
+					mu.Unlock()
+					if cb.JSAnalysis != nil {
+						cb.JSAnalysis(pageURL, jsResult)
 					}
 				}
-				apiResult = &core.APISurfaceResult{APIEndpoints: huntResult.APIEndpoints, APISpecs: huntResult.APISpecs}
+				select {
+				case <-g2ctx.Done():
+					return g2ctx.Err()
+				default:
+				}
 			}
-		} else if discovered, err := svc.Discoverer.DiscoverAPISurface(ctx, cfg.Target, crawledURLs); err != nil {
-			result.addError("Discovering API surface", err)
-		} else {
-			apiResult = discovered
-			if discovered != nil {
-				result.APIEndpoints = append(result.APIEndpoints, discovered.APIEndpoints...)
-				result.APISpecs = append(result.APISpecs, discovered.APISpecs...)
+			return nil
+		})
+
+		g2.Go(func() error {
+			progress(cb, "Discovering API surface")
+			var apiResult *core.APISurfaceResult
+			if hunter, ok := svc.Discoverer.(apiHunterDiscoverer); ok {
+				huntResult, err := hunter.HuntAPISurface(g2ctx, core.APIHuntRequest{
+					StartURL:       cfg.Target,
+					DiscoveredURLs: crawledURLs,
+					Mode:           "safe-active",
+					MaxCandidates:  250,
+					Threads:        cfg.Threads,
+					Timeout:        cfg.Timeout,
+				})
+				if err != nil {
+					mu.Lock()
+					result.addError("Discovering API surface", err)
+					mu.Unlock()
+				} else if huntResult != nil {
+					mu.Lock()
+					result.APIEndpoints = append(result.APIEndpoints, huntResult.APIEndpoints...)
+					result.APISpecs = append(result.APISpecs, huntResult.APISpecs...)
+					result.APIParameters = append(result.APIParameters, huntResult.Parameters...)
+					mu.Unlock()
+					for _, param := range huntResult.Parameters {
+						if cb.APIParameter != nil {
+							cb.APIParameter(param)
+						}
+					}
+					apiResult = &core.APISurfaceResult{APIEndpoints: huntResult.APIEndpoints, APISpecs: huntResult.APISpecs}
+				}
+			} else if discovered, err := svc.Discoverer.DiscoverAPISurface(g2ctx, cfg.Target, crawledURLs); err != nil {
+				mu.Lock()
+				result.addError("Discovering API surface", err)
+				mu.Unlock()
+			} else {
+				apiResult = discovered
+				if discovered != nil {
+					mu.Lock()
+					result.APIEndpoints = append(result.APIEndpoints, discovered.APIEndpoints...)
+					result.APISpecs = append(result.APISpecs, discovered.APISpecs...)
+					mu.Unlock()
+				}
 			}
-		}
-		if apiResult != nil && cb.APIResult != nil {
-			cb.APIResult(apiResult)
-		}
+			if apiResult != nil && cb.APIResult != nil {
+				cb.APIResult(apiResult)
+			}
+			return nil
+		})
+
+		_ = g2.Wait()
 	}
 	if err := checkCtx(); err != nil {
 		return result, err
@@ -356,22 +385,68 @@ func ParseDashboardPorts(value string) []int {
 	return ports
 }
 
+// ExtractTargetPort extracts explicit port numbers from target strings (e.g. "127.0.0.1:8643" -> 8643).
+func ExtractTargetPort(target string) int {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return 0
+	}
+	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+		target = "http://" + target
+	}
+	parsed, err := url.Parse(target)
+	if err == nil && parsed.Port() != "" {
+		var port int
+		fmt.Sscanf(parsed.Port(), "%d", &port)
+		if port > 0 && port < 65536 {
+			return port
+		}
+	}
+	return 0
+}
+
+// ParseDashboardPortsWithTarget parses port range and prepends any explicit target port.
+func ParseDashboardPortsWithTarget(value, target string) []int {
+	ports := ParseDashboardPorts(value)
+	if targetPort := ExtractTargetPort(target); targetPort > 0 {
+		seen := make(map[int]bool)
+		seen[targetPort] = true
+		out := []int{targetPort}
+		for _, p := range ports {
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	return ports
+}
+
 // DomainFromTarget extracts a domain/host for the subdomain enumeration stage.
 func DomainFromTarget(target string) string {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return ""
 	}
-	parsed, err := url.Parse(target)
+	targetWithProto := core.EnsureProtocol(target)
+	parsed, err := url.Parse(targetWithProto)
+	var host string
 	if err == nil && parsed.Hostname() != "" {
-		return parsed.Hostname()
+		host = parsed.Hostname()
+	} else {
+		target = strings.TrimPrefix(target, "http://")
+		target = strings.TrimPrefix(target, "https://")
+		if i := strings.IndexAny(target, "/:"); i >= 0 {
+			target = target[:i]
+		}
+		host = strings.TrimSpace(target)
 	}
-	target = strings.TrimPrefix(target, "http://")
-	target = strings.TrimPrefix(target, "https://")
-	if i := strings.IndexAny(target, "/:"); i >= 0 {
-		target = target[:i]
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if net.ParseIP(host) != nil {
+		return ""
 	}
-	return strings.TrimSpace(target)
+	return host
 }
 
 // ReportData converts surface map output into the core reporting contract.
@@ -398,6 +473,11 @@ func (r *FullSurfaceResult) ReportData() *core.ReportData {
 
 func normalizeConfig(cfg FullSurfaceConfig) FullSurfaceConfig {
 	cfg.Target = strings.TrimSpace(cfg.Target)
+	if cfg.Target != "" {
+		if _, _, err := net.ParseCIDR(cfg.Target); err != nil {
+			cfg.Target = core.EnsureProtocol(cfg.Target)
+		}
+	}
 	cfg.Domain = strings.TrimSpace(cfg.Domain)
 	cfg.PortRange = strings.TrimSpace(cfg.PortRange)
 	if cfg.PortRange == "" {

@@ -50,6 +50,7 @@ type AgentPanel struct {
 
 	chatInput          string
 	chatBusy           bool
+	cursorVisible      bool
 	assistantAvailable bool
 	toolsSummary       string
 	pendingApproval    *AIApprovalRequiredMsg
@@ -81,10 +82,11 @@ type AgentPanel struct {
 // NewAgentPanel creates a new agent activity panel.
 func NewAgentPanel() *AgentPanel {
 	ap := &AgentPanel{
-		logEntries:  make([]AgentLogEntry, 0, maxLogEntries),
-		chatEntries: make([]AgentChatEntry, 0, maxChatEntries),
-		autoScroll:  true,
-		agentStatus: "Idle - agent not running",
+		logEntries:    make([]AgentLogEntry, 0, maxLogEntries),
+		chatEntries:   make([]AgentChatEntry, 0, maxChatEntries),
+		autoScroll:    true,
+		cursorVisible: true,
+		agentStatus:   "Idle - agent not running",
 	}
 	ap.viewport = viewport.New(40, 15)
 	return ap
@@ -113,6 +115,10 @@ func (ap *AgentPanel) Init() tea.Cmd {
 // Update handles messages.
 func (ap *AgentPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case CursorBlinkMsg:
+		ap.cursorVisible = msg.Visible
+		return ap, nil
+
 	case tea.KeyMsg:
 		return ap.handleKey(msg)
 
@@ -166,7 +172,7 @@ func (ap *AgentPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ap.setupProvider = ""
 			ap.chatInput = ""
 			ap.addChat("error", msg.Error)
-			ap.addChat("system", "Press F5 or Ctrl+O to configure DeepSeek/OpenAI API settings.")
+			ap.addChat("system", "Press F5 or Ctrl+O to configure DeepSeek/OpenAI/Gemini API settings.")
 		} else {
 			ap.assistantAvailable = true
 			ap.toolsSummary = msg.ToolsSummary
@@ -378,7 +384,7 @@ func (ap *AgentPanel) startSetup() {
 	ap.setupProvider = ""
 	ap.chatInput = ""
 	ap.chatBusy = false
-	ap.addChat("system", "No usable DeepSeek/OpenAI API key found. Press F5 or Ctrl+O to configure API settings.")
+	ap.addChat("system", "No usable DeepSeek/OpenAI/Gemini API key found. Press F5 or Ctrl+O to configure API settings.")
 }
 
 func (ap *AgentPanel) handleChatKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -563,7 +569,7 @@ func (ap *AgentPanel) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if ap.setupStep == aiSetupProvider {
 			provider := normalizeSetupProvider(value)
 			if provider == "" {
-				ap.addChat("error", "Unsupported vendor. Press F5 or Ctrl+O to configure DeepSeek/OpenAI.")
+				ap.addChat("error", "Unsupported vendor. Press F5 or Ctrl+O to configure DeepSeek/OpenAI/Gemini.")
 				ap.chatInput = ""
 				ap.updateViewport()
 				return ap, nil
@@ -607,9 +613,13 @@ func (ap *AgentPanel) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func normalizeSetupProvider(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "deepseek", "openai":
-		return strings.ToLower(strings.TrimSpace(value))
+	val := strings.ToLower(strings.TrimSpace(value))
+	switch val {
+	case "deepseek", "openai", "google", "gemini":
+		if val == "gemini" {
+			return "google"
+		}
+		return val
 	default:
 		return ""
 	}
@@ -778,7 +788,7 @@ func (ap *AgentPanel) contentLines() []string {
 			if ap.chatBusy {
 				return []string{DimText.Render("  Checking akemi.conf...")}
 			}
-			return []string{DimText.Render("  AI offline. Press F5 or Ctrl+O to configure DeepSeek/OpenAI.")}
+			return []string{DimText.Render("  AI offline. Press F5 or Ctrl+O to configure DeepSeek/OpenAI/Gemini.")}
 		}
 		lines := make([]string, 0, len(ap.chatEntries)*2)
 		for _, entry := range ap.chatEntries {
@@ -1057,14 +1067,14 @@ func (ap *AgentPanel) renderChatInput() string {
 	}
 	if ap.setupStep == aiSetupProvider {
 		prompt := "vendor> " + ap.chatInput
-		if ap.focused {
+		if ap.focused && ap.cursorVisible {
 			prompt += "|"
 		}
 		return AccentText.Render(prompt)
 	}
 	if ap.setupStep == aiSetupAPI {
 		prompt := "api key> " + strings.Repeat("*", len(ap.chatInput))
-		if ap.focused {
+		if ap.focused && ap.cursorVisible {
 			prompt += "|"
 		}
 		return AccentText.Render(prompt)
@@ -1073,7 +1083,7 @@ func (ap *AgentPanel) renderChatInput() string {
 		return DimText.Render("AI is thinking...")
 	}
 	prompt := "> " + ap.chatInput
-	if ap.focused {
+	if ap.focused && ap.cursorVisible {
 		prompt += "|"
 	}
 	return AccentText.Render(prompt)

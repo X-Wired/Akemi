@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -270,6 +271,59 @@ func ListArchives(dir string) ([]ArchiveSummary, error) {
 	})
 
 	return summaries, nil
+}
+
+// LoadLatestArchive recursively finds and loads the most recently exported
+// valid archive below dir. A missing directory or a directory with no valid
+// archives is not an error. Invalid individual files are skipped so one stale
+// or partial archive cannot prevent a project from opening.
+func LoadLatestArchive(dir string) (*File, string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil, "", nil
+	}
+
+	var latestPath string
+	var latestExport time.Time
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".akemi") {
+			return nil
+		}
+
+		metadata, err := readMetadata(path)
+		if err != nil || metadata == nil {
+			return nil
+		}
+		exportedAt := metadata.ExportedAt
+		if exportedAt.IsZero() {
+			if info, err := entry.Info(); err == nil {
+				exportedAt = info.ModTime()
+			}
+		}
+		if latestPath == "" || exportedAt.After(latestExport) || (exportedAt.Equal(latestExport) && path > latestPath) {
+			latestPath = path
+			latestExport = exportedAt
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("walk project archives: %w", err)
+	}
+	if latestPath == "" {
+		return nil, "", nil
+	}
+
+	file, err := ReadFile(latestPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("read latest project archive: %w", err)
+	}
+	return file, latestPath, nil
 }
 
 // readMetadata reads only the envelope fields of a .akemi archive to avoid

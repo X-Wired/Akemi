@@ -240,6 +240,14 @@ func (s *Session) SetToolEventSink(sink toolbridge.Sink) {
 	s.router.SetToolEventSink(sink)
 }
 
+// RecordScanResult injects a completed scan result into the underlying MCP state store.
+func (s *Session) RecordScanResult(target, intent string, result interface{}) {
+	if s == nil || s.router == nil {
+		return
+	}
+	s.router.RecordScanResult(target, intent, result)
+}
+
 // Transcript returns the visible chat transcript restored from history.
 func (s *Session) Transcript() []TranscriptEntry {
 	if s == nil {

@@ -65,6 +65,7 @@ type ExecutionStatus string
 const (
 	ExecRunning   ExecutionStatus = "running"
 	ExecCompleted ExecutionStatus = "completed"
+	ExecPartial   ExecutionStatus = "partial"
 	ExecFailed    ExecutionStatus = "failed"
 	ExecCancelled ExecutionStatus = "cancelled"
 )
@@ -78,6 +79,9 @@ type ExecutionError struct {
 
 // Execute runs the plan until completion or failure.
 func (e *Executor) Execute(ctx context.Context, plan *planner.Plan) (*ExecutionResult, error) {
+	if err := planner.ValidatePlan(plan); err != nil {
+		return nil, err
+	}
 	result := &ExecutionResult{
 		PlanID:    plan.ID,
 		Status:    ExecRunning,
@@ -139,6 +143,7 @@ func (e *Executor) Execute(ctx context.Context, plan *planner.Plan) (*ExecutionR
 	result.CompletedAt = &now
 
 	failedCount := 0
+	partialCount := 0
 	skippedCount := 0
 	for _, t := range plan.Tasks {
 		if t.Status == planner.TaskFailed || t.Status == planner.TaskDenied {
@@ -147,24 +152,29 @@ func (e *Executor) Execute(ctx context.Context, plan *planner.Plan) (*ExecutionR
 		if t.Status == planner.TaskSkipped {
 			skippedCount++
 		}
+		if t.Result != nil && t.Result.Status == tool.StatusPartial {
+			partialCount++
+		}
 	}
 
 	if cancelled {
 		result.Status = ExecCancelled
 	} else if failedCount > 0 || skippedCount > 0 {
 		result.Status = ExecFailed
+	} else if partialCount > 0 {
+		result.Status = ExecPartial
 	} else {
 		result.Status = ExecCompleted
 	}
 
-	result.Summary = fmt.Sprintf("Executed %d tasks: %d completed, %d failed, %d skipped, %d findings",
+	result.Summary = fmt.Sprintf("Executed %d tasks: %d completed, %d partial, %d failed, %d skipped, %d findings",
 		len(plan.Tasks),
 		countByStatus(plan.Tasks, planner.TaskCompleted),
+		partialCount,
 		failedCount,
 		skippedCount,
 		len(result.Findings),
 	)
-
 	e.eventBus.Publish(events.Event{
 		Type:    events.EventPlanCompleted,
 		PlanID:  plan.ID,
@@ -199,9 +209,22 @@ func (e *Executor) executeTask(
 		return
 	}
 
+	// Shared policy check
+	if err := validateSharedPolicy(ctx, task, agentTool); err != nil {
+		task.Status = planner.TaskDenied
+		resultMu.Lock()
+		result.Errors = append(result.Errors, ExecutionError{TaskID: task.ID, ToolName: task.ToolName, Error: err.Error()})
+		resultMu.Unlock()
+		e.eventBus.Publish(events.Event{Type: events.EventTaskDenied, PlanID: result.PlanID, TaskID: task.ID, ToolName: task.ToolName, Message: err.Error()})
+		return
+	}
+
 	// Safety check
 	if err := e.safetyLayer.ValidateTask(task.ToolName, task.Args, agentTool.RiskLevel); err != nil {
 		task.Status = planner.TaskDenied
+		resultMu.Lock()
+		result.Errors = append(result.Errors, ExecutionError{TaskID: task.ID, ToolName: task.ToolName, Error: err.Error()})
+		resultMu.Unlock()
 		e.eventBus.Publish(events.Event{
 			Type: events.EventTaskDenied, PlanID: result.PlanID,
 			TaskID: task.ID, ToolName: task.ToolName, Message: err.Error(),
@@ -246,7 +269,7 @@ func (e *Executor) executeTask(
 		if lastErr == nil && toolResult == nil {
 			lastErr = fmt.Errorf("tool returned nil result")
 		}
-		if lastErr == nil && toolResult.Status != tool.StatusError {
+		if lastErr == nil && toolResult != nil && (toolResult.Status == tool.StatusSuccess || toolResult.Status == tool.StatusPartial) {
 			break
 		}
 	}
@@ -330,14 +353,14 @@ func (e *Executor) propagateData(task *planner.TaskNode, data map[string]interfa
 }
 
 // =============================================================================
-// Task Tracker — manages the DAG state during execution
+// Task Tracker â€” manages the DAG state during execution
 // =============================================================================
 
 type taskTracker struct {
 	ordered []*planner.TaskNode
 	tasks   map[string]*planner.TaskNode
-	deps    map[string][]string // taskID → list of taskIDs that depend on it
-	pending map[string]int      // taskID → count of unfinished dependencies
+	deps    map[string][]string // taskID â†’ list of taskIDs that depend on it
+	pending map[string]int      // taskID â†’ count of unfinished dependencies
 	queued  map[string]bool
 	isDone  map[string]bool
 	mu      sync.Mutex

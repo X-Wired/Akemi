@@ -89,7 +89,8 @@ func handleFullSurfaceMap(ctx context.Context, args map[string]interface{}, svc 
 			emitDiscoveryItems(ctx, svc, "akemi_full_surface_map", "Enumerating subdomains", subdomainDiscoveryItems([]core.SubdomainResult{subdomain})...)
 		},
 	})
-	if err != nil {
+	partialErr := err
+	if err != nil && result == nil {
 		return nil, err
 	}
 
@@ -97,6 +98,9 @@ func handleFullSurfaceMap(ctx context.Context, args map[string]interface{}, svc 
 	counts := result.Counts
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Full Surface Map Results for %s:\n", target))
+	if partialErr != nil {
+		sb.WriteString(fmt.Sprintf("  Status: partial (%s)\n", partialErr.Error()))
+	}
 	sb.WriteString(fmt.Sprintf("  Ports: %d\n", counts["ports"]))
 	sb.WriteString(fmt.Sprintf("  URLs: %d\n", counts["urls"]))
 	sb.WriteString(fmt.Sprintf("  Params: %d\n", counts["params"]))

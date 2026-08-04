@@ -165,6 +165,7 @@ type ParamDiscoveryResult struct {
 // ParamDetail describes a discovered parameter.
 type ParamDetail struct {
 	Name     string   `json:"name"`
+	Method   string   `json:"method,omitempty"`
 	Sources  []string `json:"sources"`
 	Examples []string `json:"examples,omitempty"`
 }

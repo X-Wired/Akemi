@@ -12,8 +12,13 @@
 /wordlists
 /bin
 /results
+/workemi/
+*.db
+*.akemi
+akemi.project.toml
 nul
 coverage.out
+coverage
 
 # DotHound runtime
 DotHound/.dothound/

@@ -55,7 +55,7 @@ func (s *ScannerService) Scan(ctx context.Context, req core.ScanRequest) (*core.
 	}
 
 	// Run the scan (this blocks — in Phase 5 we'd make this async with a task queue)
-	summary, err := scanner.Run()
+	summary, err := scanner.RunContext(ctx)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "port scan failed",
 			slog.String("host", req.Host),
@@ -120,7 +120,7 @@ func (s *ScannerService) DiscoverHosts(ctx context.Context, req core.HostDiscove
 	default:
 	}
 
-	summary, err := scanner.Run()
+	summary, err := scanner.RunContext(ctx)
 	if err != nil {
 		return nil, core.NewError("Scanner.DiscoverHosts", req.CIDR, err)
 	}

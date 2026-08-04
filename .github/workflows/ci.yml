@@ -120,6 +120,7 @@ jobs:
       - name: Verify Akemi CLI
         run: |
           "./bin/${{ matrix.binary }}" --version
+          "./bin/${{ matrix.binary }}" agent --help
           "./bin/${{ matrix.binary }}" serve --help
 
       - uses: actions/upload-artifact@v4

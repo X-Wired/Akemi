@@ -18,6 +18,7 @@ import (
 	core "Akemi/internal/core"
 	"Akemi/internal/reportfiles"
 	"Akemi/internal/surface"
+	"Akemi/internal/toolmeta"
 
 	"github.com/spf13/cobra"
 )
@@ -48,12 +49,12 @@ Examples:
 		RunE: runAgent,
 	}
 
-	cmd.Flags().StringP("target", "t", "", "Target URL, domain, or IP (required)")
+	cmd.Flags().String("target", "", "Target URL, domain, or IP (required)")
 	cmd.Flags().String("intent", "quick_recon", "Agent intent: quick_recon, full_surface_map/full_surface_scan, sqli_hunt, vuln_assessment, api_review")
 	cmd.Flags().String("description", "", "Custom description of the goal (optional)")
 	cmd.Flags().Int("concurrency", 5, "Maximum parallel tasks")
 	cmd.Flags().Int("max-rpm", 300, "Maximum requests per minute per target")
-	cmd.Flags().String("approve-risk", "active", "Maximum autonomous risk: safe, passive, active, intrusive, destructive")
+	cmd.Flags().String("approve-risk", "intrusive", "Maximum autonomous risk: safe, passive, active, intrusive, destructive")
 	cmd.Flags().StringSlice("allow-domain", nil, "Allowed domains (can specify multiple)")
 	cmd.Flags().StringSlice("allow-cidr", nil, "Allowed CIDR ranges")
 	cmd.Flags().StringSlice("block-domain", nil, "Blocked domains")
@@ -157,7 +158,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	// Run agent
 	startTime := time.Now()
-	fmt.Printf("\n🤖 Akemi Agent v2.0.0-dev\n")
+	fmt.Printf("\n🤖 Akemi Agent v%s\n", CurrentVersion())
 	fmt.Printf("   Target: %s\n", target)
 	fmt.Printf("   Intent: %s\n", intent)
 	fmt.Printf("   Risk:   <= %s\n", maxAutoRisk)
@@ -453,6 +454,9 @@ func buildAgentToolRegistry(svc *Services, logger *slog.Logger) *tool.Registry {
 		},
 	})
 
+	for _, definition := range reg.All() {
+		toolmeta.Apply(definition)
+	}
 	return reg
 }
 

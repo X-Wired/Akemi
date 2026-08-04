@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"Akemi/internal/config"
 	core "Akemi/internal/core"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -43,6 +44,14 @@ var intentOptions = []string{
 	"vuln_assessment",
 }
 
+var portPresetOptions = []string{
+	"top-1000",
+	"top-100",
+	"web",
+	"all",
+	"custom",
+}
+
 // phaseCheckFields maps a display label to the field extractor for phase checkmarks.
 var phaseCheckFields = []struct {
 	label   string
@@ -75,19 +84,22 @@ const (
 
 // TargetPanel manages target configuration.
 type TargetPanel struct {
-	focused       bool
-	width         int
-	height        int
-	cursor        int // which field is selected
-	inputMode     bool
-	fields        [fieldCount]targetField
-	status        string
-	scanning      bool
-	recentTargets []string
-	recentCursor  int
-	viewport      viewport.Model
-	pathPrompt    pathPromptMode
-	pathInput     string
+	focused         bool
+	width           int
+	height          int
+	cursor          int // which field is selected
+	inputMode       bool
+	cursorVisible   bool
+	fields          [fieldCount]targetField
+	status          string
+	effectiveScope  string
+	effectivePolicy string
+	scanning        bool
+	recentTargets   []string
+	recentCursor    int
+	viewport        viewport.Model
+	pathPrompt      pathPromptMode
+	pathInput       string
 
 	// Scan progress visualization
 	progressPercent float64
@@ -115,9 +127,10 @@ type TargetPanel struct {
 // NewTargetPanel creates a new target configuration panel.
 func NewTargetPanel() *TargetPanel {
 	tp := &TargetPanel{
-		cursor:    0,
-		inputMode: false,
-		status:    "Ready — configure target and press [Start]",
+		cursor:        0,
+		inputMode:     false,
+		cursorVisible: true,
+		status:        "Ready — configure target and press [Start]",
 		fields: [fieldCount]targetField{
 			{label: "Target", value: "", placeholder: "https://example.com or 10.0.0.0/24", editable: true},
 			{label: "Login URL", value: "", placeholder: "optional; defaults to Target", editable: true},
@@ -157,6 +170,10 @@ func (tp *TargetPanel) Init() tea.Cmd {
 // Update handles messages for the target panel.
 func (tp *TargetPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case CursorBlinkMsg:
+		tp.cursorVisible = msg.Visible
+		return tp, nil
+
 	case ScanStartedMsg:
 		tp.scanning = true
 		tp.progressPercent = 0
@@ -175,6 +192,7 @@ func (tp *TargetPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ScanDoneMsg:
 		tp.scanning = false
 		tp.progressPercent = 100
+		tp.progressPhase = ""
 		if msg.Cancelled {
 			tp.status = fmt.Sprintf("Stopped - %s", msg.Summary)
 			if msg.ArchiveError != "" {
@@ -306,11 +324,15 @@ func (tp *TargetPanel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left", "h":
 		if tp.cursor == fieldIntent {
 			tp.cycleIntent(-1)
+		} else if tp.cursor == fieldPorts {
+			tp.cyclePorts(-1)
 		}
 
 	case "right", "l":
 		if tp.cursor == fieldIntent {
 			tp.cycleIntent(1)
+		} else if tp.cursor == fieldPorts {
+			tp.cyclePorts(1)
 		}
 
 	case "enter":
@@ -334,7 +356,8 @@ func (tp *TargetPanel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return tp, nil
 		}
 		if tp.cursor == fieldSave {
-			tp.openPathPrompt(pathPromptSave)
+			tp.SaveRunRequested = true
+			tp.status = "Saving run..."
 			return tp, nil
 		}
 		if tp.cursor == fieldLoad {
@@ -346,7 +369,7 @@ func (tp *TargetPanel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return tp, nil
 		}
 		if tp.fields[tp.cursor].editable {
-			tp.inputMode = true
+			tp.beginInput()
 		}
 
 	case "esc":
@@ -359,7 +382,7 @@ func (tp *TargetPanel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (tp *TargetPanel) handlePathPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		path := strings.TrimSpace(tp.pathInput)
+		path := core.CleanInput(tp.pathInput)
 		switch tp.pathPrompt {
 		case pathPromptSave:
 			tp.SaveRunRequested = true
@@ -381,33 +404,56 @@ func (tp *TargetPanel) handlePathPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		tp.status = "Ready - configure target and press [Start]"
 	case "backspace", "ctrl+h":
 		if len(tp.pathInput) > 0 {
-			tp.pathInput = tp.pathInput[:len(tp.pathInput)-1]
+			runes := []rune(tp.pathInput)
+			tp.pathInput = string(runes[:len(runes)-1])
 		}
 	default:
 		if len(msg.Runes) > 0 {
-			tp.pathInput += string(msg.Runes)
-		} else if len(msg.String()) == 1 {
-			tp.pathInput += msg.String()
+			tp.pathInput += core.CleanInput(string(msg.Runes))
+		} else if len(msg.String()) > 0 && !strings.HasPrefix(msg.String(), "ctrl+") && !strings.HasPrefix(msg.String(), "alt+") {
+			tp.pathInput += core.CleanInput(msg.String())
 		}
 	}
 	return tp, nil
 }
 
 func (tp *TargetPanel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "enter":
+	switch msg.Type {
+	case tea.KeyEnter:
 		tp.inputMode = false
-	case "esc":
+	case tea.KeyEsc:
 		tp.inputMode = false
-	case "backspace":
-		if len(tp.fields[tp.cursor].value) > 0 {
-			tp.fields[tp.cursor].value = tp.fields[tp.cursor].value[:len(tp.fields[tp.cursor].value)-1]
+	case tea.KeyBackspace:
+		val := tp.fields[tp.cursor].value
+		if len(val) > 0 {
+			runes := []rune(val)
+			tp.fields[tp.cursor].value = string(runes[:len(runes)-1])
 		}
+	case tea.KeyRunes:
+		clean := core.CleanInput(string(msg.Runes))
+		tp.fields[tp.cursor].value += clean
 	default:
-		if len(msg.String()) == 1 {
-			tp.fields[tp.cursor].value += msg.String()
+		switch msg.String() {
+		case "enter":
+			tp.inputMode = false
+		case "esc":
+			tp.inputMode = false
+		case "backspace", "ctrl+h":
+			val := tp.fields[tp.cursor].value
+			if len(val) > 0 {
+				runes := []rune(val)
+				tp.fields[tp.cursor].value = string(runes[:len(runes)-1])
+			}
+		default:
+			str := msg.String()
+			if len(str) > 0 && !strings.HasPrefix(str, "ctrl+") && !strings.HasPrefix(str, "alt+") {
+				clean := core.CleanInput(str)
+				tp.fields[tp.cursor].value += clean
+			}
 		}
 	}
+	// Sanitize field value
+	tp.fields[tp.cursor].value = core.CleanInput(tp.fields[tp.cursor].value)
 	return tp, nil
 }
 
@@ -428,7 +474,7 @@ func (tp *TargetPanel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			y := msg.Y - 3 // offset for border + title
 			if y >= 0 && y < fieldCount {
 				tp.cursor = y
-				if y == fieldStart && tp.fields[fieldTarget].value != "" {
+				if y == fieldStart && core.CleanInput(tp.fields[fieldTarget].value) != "" {
 					tp.scanning = true
 					tp.progressPercent = 0
 					tp.progressPhase = ""
@@ -443,7 +489,8 @@ func (tp *TargetPanel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					return tp, nil
 				}
 				if y == fieldSave {
-					tp.openPathPrompt(pathPromptSave)
+					tp.SaveRunRequested = true
+					tp.status = "Saving run..."
 					return tp, nil
 				}
 				if y == fieldLoad {
@@ -455,7 +502,7 @@ func (tp *TargetPanel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					return tp, nil
 				}
 				if tp.fields[y].editable {
-					tp.inputMode = true
+					tp.beginInput()
 				}
 			}
 		}
@@ -465,11 +512,11 @@ func (tp *TargetPanel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (tp *TargetPanel) buildConfig() ScanConfig {
 	return ScanConfig{
-		Target:    tp.fields[fieldTarget].value,
-		AuthURL:   tp.authURL(),
-		PortRange: tp.fields[fieldPorts].value,
+		Target:    core.CleanInput(tp.fields[fieldTarget].value),
+		AuthURL:   core.CleanInput(tp.authURL()),
+		PortRange: core.CleanInput(tp.fields[fieldPorts].value),
 		Threads:   atoi(tp.fields[fieldThreads].value, 200),
-		Proxy:     tp.fields[fieldProxy].value,
+		Proxy:     core.CleanInput(tp.fields[fieldProxy].value),
 		Intent:    tp.intent(),
 		Depth:     core.NormalizeCrawlDepth(atoi(tp.fields[fieldDepth].value, 2)),
 		Timeout:   atoi(tp.fields[fieldTimeout].value, 10),
@@ -653,7 +700,7 @@ func (tp *TargetPanel) View() string {
 
 		if i == tp.cursor {
 			prefix = AccentText.Render("▶ ")
-			if tp.inputMode && field.editable {
+			if tp.inputMode && field.editable && tp.cursorVisible {
 				displayValue = tp.displayValue(i, field.value) + AccentText.Render("█") // cursor
 			}
 		}
@@ -689,9 +736,14 @@ func (tp *TargetPanel) View() string {
 			valStr := fitCellWidth(displayValue, valueWidth)
 			if i == fieldIntent {
 				valStr = tp.renderIntentSelector()
+			} else if i == fieldPorts {
+				valStr = tp.renderPortsSelector()
 			}
 			if value == "" {
 				valStr = DimText.Render(fitCellWidth(field.placeholder, valueWidth))
+				if tp.inputMode && i == tp.cursor && field.editable && tp.cursorVisible {
+					valStr += AccentText.Render("█")
+				}
 			}
 			sb.WriteString(fmt.Sprintf("%s%s %s\n", prefix, label, valStr))
 		}
@@ -733,6 +785,14 @@ func (tp *TargetPanel) View() string {
 		sb.WriteString("\n")
 	}
 
+	if tp.effectiveScope != "" {
+		sb.WriteString(DimText.Render("Scope: " + tp.effectiveScope))
+		sb.WriteString("\n")
+	}
+	if tp.effectivePolicy != "" {
+		sb.WriteString(DimText.Render("Policy: " + tp.effectivePolicy))
+		sb.WriteString("\n")
+	}
 	// Status
 	sb.WriteString(HelpText.Render(tp.status))
 
@@ -772,13 +832,19 @@ func (tp *TargetPanel) PathPromptActive() bool {
 	return tp.pathPrompt != pathPromptNone
 }
 
+func (tp *TargetPanel) beginInput() {
+	tp.inputMode = true
+	tp.cursorVisible = true
+}
+
 func (tp *TargetPanel) openPathPrompt(mode pathPromptMode) {
 	tp.pathPrompt = mode
 	tp.pathInput = ""
 	tp.inputMode = false
+	tp.cursorVisible = true
 	switch mode {
 	case pathPromptSave:
-		tp.status = "Enter save path, or leave blank for ~/target.akemi"
+		tp.status = fmt.Sprintf("Enter save path, or leave blank for %s", filepath.Join(config.WorkemiDirectory(), "Projects", "<target>", "<target>.akemi"))
 	case pathPromptLoad:
 		tp.status = "Enter .akemi path to load"
 	}
@@ -809,15 +875,75 @@ func (tp *TargetPanel) renderIntentSelector() string {
 	return HighlightRow.Render(fmt.Sprintf(" %s ", current))
 }
 
+func (tp *TargetPanel) cyclePorts(delta int) {
+	current := tp.fields[fieldPorts].value
+	idx := 0
+	for i, opt := range portPresetOptions {
+		if current == opt || (opt == "web" && current == "80,443,8080,8443") || (opt == "all" && current == "1-65535") {
+			idx = i
+			break
+		}
+	}
+	next := (idx + delta + len(portPresetOptions)) % len(portPresetOptions)
+	switch portPresetOptions[next] {
+	case "top-1000":
+		tp.fields[fieldPorts].value = "top-1000"
+	case "top-100":
+		tp.fields[fieldPorts].value = "top-100"
+	case "web":
+		tp.fields[fieldPorts].value = "80,443,8080,8443"
+	case "all":
+		tp.fields[fieldPorts].value = "1-65535"
+	case "custom":
+		if tp.fields[fieldPorts].value == "top-1000" || tp.fields[fieldPorts].value == "top-100" || tp.fields[fieldPorts].value == "80,443,8080,8443" || tp.fields[fieldPorts].value == "1-65535" {
+			tp.fields[fieldPorts].value = "80,443,8080"
+		}
+	}
+}
+
+func (tp *TargetPanel) renderPortsSelector() string {
+	current := tp.fields[fieldPorts].value
+	var parts []string
+	for _, opt := range portPresetOptions {
+		isSelected := false
+		switch opt {
+		case "top-1000":
+			isSelected = (current == "top-1000")
+		case "top-100":
+			isSelected = (current == "top-100")
+		case "web":
+			isSelected = (current == "80,443,8080,8443")
+		case "all":
+			isSelected = (current == "1-65535")
+		case "custom":
+			isSelected = (current != "top-1000" && current != "top-100" && current != "80,443,8080,8443" && current != "1-65535")
+		}
+
+		if isSelected {
+			parts = append(parts, HighlightRow.Render(fmt.Sprintf("[%s]", opt)))
+		} else {
+			parts = append(parts, DimText.Render(opt))
+		}
+	}
+	val := strings.Join(parts, " ")
+	if current != "top-1000" && current != "top-100" && current != "80,443,8080,8443" && current != "1-65535" {
+		val += " " + AccentText.Render(fmt.Sprintf("(%s)", current))
+	}
+	return val
+}
+
 func (tp *TargetPanel) renderPathPrompt() string {
 	title := "Save Run"
-	hint := "Blank = ~/target.akemi"
+	hint := "Blank = " + filepath.Join(config.WorkemiDirectory(), "Projects", "<target>", "<target>.akemi")
 	if tp.pathPrompt == pathPromptLoad {
 		title = "Load Run"
 		hint = "Path to .akemi"
 	}
 
-	cursor := AccentText.Render("|")
+	cursor := ""
+	if tp.cursorVisible {
+		cursor = AccentText.Render("|")
+	}
 	input := tp.pathInput + cursor
 	if tp.pathInput == "" {
 		input = DimText.Render(hint) + cursor

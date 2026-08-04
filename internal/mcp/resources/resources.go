@@ -157,12 +157,10 @@ func (rp *ResourceProvider) latestStructured() map[string]interface{} {
 	if rp.state == nil {
 		return nil
 	}
-	for _, toolName := range []string{"akemi_full_surface_map", "akemi_port_scan", "akemi_probe_vulns", "akemi_crawl"} {
-		if structured := rp.state.LastStructured(toolName); structured != nil {
-			return structured
-		}
-	}
-	return nil
+	return rp.state.LatestStructured(
+		"akemi_full_surface_map", "akemi_full_surface_scan", "akemi_quick_recon", "akemi_api_hunter",
+		"akemi_port_scan", "akemi_probe_vulns", "akemi_crawl", "akemi_discover_api",
+	)
 }
 
 func (rp *ResourceProvider) pathFromLatest(path ...string) interface{} {
