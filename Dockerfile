@@ -1,7 +1,7 @@
 # Akemi v2.1.0 multi-stage Docker build
 
-ARG GO_VERSION=1.24
-ARG RUST_VERSION=1.85
+ARG GO_VERSION=1.25.12
+ARG RUST_VERSION=1.88.0
 ARG AKEMI_VERSION=2.1.0
 
 # Stage 1: Rust engines (Akemi-Spear + DotHound)
@@ -53,7 +53,7 @@ COPY --from=rust-builder /build/DotHound/target/release/dothound /usr/local/bin/
 
 COPY probes/ /etc/akemi/probes/
 COPY config/ /etc/akemi/config/
-COPY akemi.conf /etc/akemi/akemi.conf
+COPY akemi.conf.example /etc/akemi/akemi.conf
 
 ENV AKEMI_DB_DSN=/var/lib/akemi/akemi.db
 

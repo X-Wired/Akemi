@@ -152,8 +152,8 @@ Use the provided PowerShell script to build optimized binaries for Windows and L
 ```
 
 **Requirements:**
-- Go `1.24.0` (the CI version)
-- Rust `1.85.0` (for Akemi-Spear and DotHound)
+- Go `1.25.12` (the CI version)
+- Rust `1.88.0` (for Akemi-Spear and DotHound)
 - Docker Desktop or Docker Engine for container builds (optional)
 - libpcap/Npcap and the required privileges only for SYN scanning
 
@@ -176,10 +176,10 @@ The script will:
 
 ## Common Workflows
 
-### 1. Autonomous Agent Engagement (NEW)
-Let the LLM agent plan and execute a full attack surface mapping:
+### 1. TUI
+All (Mostly) Akemi Capabilities in one TUI:
 ```bash
-Akemi.exe agent --target https://app.example.com --intent full_surface_map
+./Akemi.exe  (Or just ./Akemi)
 ```
 
 ### 2. Full Surface Mapping (Manual)
@@ -191,7 +191,7 @@ Akemi.exe -u https://target.com --crawl --depth 3 --params --js --scrape --graph
 ### 3. Infrastructure Triage & Port Scanning
 Leverage Akemi-Spear for high-speed scanning:
 ```bash
-Akemi.exe --targets targets.txt --port-scan-ports 80,443,8080 --rate 1000
+Akemi.exe --targets targets.txt --port-scan -ports 80,443,8080 --rate 1000
 ```
 
 ### 4. Vulnerability Probing
@@ -200,19 +200,7 @@ Validate high-impact vulnerabilities with structured templates:
 Akemi.exe -u https://target.com --vuln-check --vuln-check-tags sqli,lfi
 ```
 
-### 5. MCP Server Mode (NEW)
-Expose Akemi as a tool source for Claude Desktop:
-```bash
-Akemi.exe serve --transport stdio
-```
-
-### 6. TUI Dashboard (NEW)
-Launch the interactive terminal dashboard:
-```bash
-Akemi.exe interactive
-```
-
-### 7. Relational Graph Generation
+### 5. Relational Graph Generation
 Visualize the discovered surface and its connections:
 ```bash
 Akemi.exe -u https://target.com --crawl --graph --report-dir ./results
@@ -260,7 +248,7 @@ Build the Rust components directly with locked dependencies:
 For a containerized build:
 
 ```bash
-docker build --build-arg GO_VERSION=1.24 --build-arg RUST_VERSION=1.85 -t akemi:2.1 .
+docker build --build-arg GO_VERSION=1.25.12 --build-arg RUST_VERSION=1.88.0 -t akemi:2.1 .
 docker run --rm akemi:2.1 --version
 ```
 
@@ -281,6 +269,7 @@ go test ./...
 go vet ./...
 docker compose --profile server config
 ```
+if you want to contribute to akemi, ci/cd are avaliable for your PR. just follow the .github/workflows.
 
 
 ## License

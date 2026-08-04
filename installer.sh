@@ -54,8 +54,8 @@ install_pkg
 
 # 4. Toolchain: Go
 echo -e "${BLUE}[*] Checking Go toolchain...${NC}"
-GO_REQUIRED="1.24.0"
-RUST_REQUIRED="1.85.0"
+GO_REQUIRED="1.25.12"
+RUST_REQUIRED="1.88.0"
 
 check_go() {
     if command -v go &> /dev/null; then
