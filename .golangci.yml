@@ -52,7 +52,7 @@ linters:
       enable-all: true
     misspell:
       locale: US
-      ignore-words:
+      ignore-rules:
         - akemi # Project name
     staticcheck:
       checks: ["all", "-SA1019"] # Allow deprecated usage during migration

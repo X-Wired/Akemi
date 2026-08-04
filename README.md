@@ -1,19 +1,19 @@
 ![Akemi Logo](Pictures/CyberHuntress.png)
 
-# Akemi: Autonomous Attack Surface Management
+# Akemi: Web API Pentesting System
 
-> **v2.1.0 development snapshot** - This release includes the v2 MCP server and autonomous agent tooling.
+> **v2.1.0 stable development snapshot** - This release includes the v2 MCP server and autonomous agent tooling.
 > For source, release notes, and downloads, visit [X-Wired/Akemi](https://github.com/X-Wired/Akemi).
 
-**Akemi v2** is an AI-augmented, modular attack surface management framework that combines high-performance reconnaissance with LLM-driven autonomous agents. It can map, probe, and validate entire attack surfaces - either manually via CLI or autonomously through an AI agent that plans and executes engagements for you.
+**Akemi v2.1** is an AI-augmented, modular Web API pentesting system that combines high-performance reconnaissance with LLM-driven autonomous agents. It can map, probe, and validate entire attack surfaces - either manually via CLI or autonomously through an AI agent that plans and executes engagements for you.
 
 The framework integrates high-speed network triage (Akemi-Spear), deep web discovery, a YAML-driven vulnerability engine, and an LLM agent system into a single, cohesive environment with an optional rich terminal UI.
 
 ---
 
-## 2.1 safety and result contract
+## 2.1 Safety and Result Contracts
 
-The current 2.1 tree is a pre-stable development snapshot. Target-interacting
+The current 2.1 tree is a stable development snapshot. Target-interacting
 tools use a shared scoped run context: explicit root domains may authorize
 their subdomains, while unrelated domains and discovered IPs remain outside
 scope. Active and intrusive work can run autonomously inside that scope;

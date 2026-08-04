@@ -209,8 +209,8 @@ jobs:
       - name: Verify packaged binaries
         run: |
           docker run --rm akemi:ci --version
-          docker run --rm akemi:ci Akemi-Spear --version
-          docker run --rm akemi:ci dothound --version
+          docker run --rm --entrypoint /usr/local/bin/Akemi-Spear akemi:ci --version
+          docker run --rm --entrypoint /usr/local/bin/dothound akemi:ci --version
 
       - name: Verify HTTP transport
         run: |
